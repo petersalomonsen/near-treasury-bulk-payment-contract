@@ -89,13 +89,17 @@ impl BulkPaymentContract {
         // - overhead: ~50 bytes for Vec storage
         const BYTES_PER_RECORD: u64 = 216;
         
-        let storage_bytes = BYTES_PER_RECORD * num_records;
+        let storage_bytes = BYTES_PER_RECORD.checked_mul(num_records)
+            .expect("Storage bytes calculation overflow");
         
         // NEAR storage cost: 1 byte = 10^19 yoctoNEAR
-        let storage_cost_yocto = storage_bytes as u128 * 10_u128.pow(19);
+        let storage_cost_yocto = (storage_bytes as u128).checked_mul(10_u128.pow(19))
+            .expect("Storage cost calculation overflow");
         
         // Add 10% revenue margin
-        let total_cost_yocto = storage_cost_yocto * 11 / 10;
+        let total_cost_yocto = storage_cost_yocto.checked_mul(11)
+            .and_then(|x| x.checked_div(10))
+            .expect("Total cost calculation overflow");
         let total_cost = NearToken::from_yoctonear(total_cost_yocto);
         
         let attached = env::attached_deposit();
@@ -108,7 +112,9 @@ impl BulkPaymentContract {
         let caller = env::predecessor_account_id();
         let current_credits = self.storage_credits.get(&caller).copied().unwrap_or(NearToken::from_yoctonear(0));
         let new_credits = NearToken::from_yoctonear(
-            current_credits.as_yoctonear() + (num_records as u128)
+            current_credits.as_yoctonear()
+                .checked_add(num_records as u128)
+                .expect("Storage credits overflow")
         );
         self.storage_credits.insert(caller.clone(), new_credits);
         
@@ -186,10 +192,11 @@ impl BulkPaymentContract {
             "List must be in Pending status"
         );
         
-        // Calculate total payment amount
+        // Calculate total payment amount (with overflow check)
         let total_amount: u128 = list.payments.iter()
             .map(|p| p.amount)
-            .sum();
+            .try_fold(0u128, |acc, x| acc.checked_add(x))
+            .expect("Total payment amount overflow");
         
         let attached = env::attached_deposit();
         let required = NearToken::from_yoctonear(total_amount);
