@@ -24,7 +24,7 @@ async fn create_account(
         )
         .public_key(
             near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY
-                .parse()
+                .parse::<near_api::PublicKey>()
                 .unwrap(),
         )
         .unwrap()
@@ -205,7 +205,8 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
         .unwrap();
 
     submit_result.assert_success();
-    let list_id: u64 = submit_result.data;
+    // List IDs start from 0
+    let list_id: u64 = 0;
 
     // Verify storage credits were deducted
     let credits: u128 = near_api::Contract(contract_id.clone())
@@ -310,7 +311,9 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap();
 
-    let list_id: u64 = submit_result.data;
+    submit_result.assert_success();
+    // List IDs start from 0 and increment
+    let list_id: u64 = 0;
 
     // Approve the list
     let total_amount = NearToken::from_yoctonear(250_000_000_000_000_000_000_000_000); // 250 NEAR
@@ -433,7 +436,9 @@ async fn test_failed_payment_retry() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap();
 
-    let list_id: u64 = submit_result.data;
+    submit_result.assert_success();
+    // List IDs start from 0 and increment
+    let list_id: u64 = 0;
 
     // Approve the list
     let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
@@ -550,7 +555,9 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
         .await
         .unwrap();
 
-    let list_id: u64 = submit_result.data;
+    submit_result.assert_success();
+    // List IDs start from 0 and increment
+    let list_id: u64 = 0;
 
     // Get user balance before approval
     let balance_before_approve = near_api::Account(user_id.clone())
@@ -584,7 +591,7 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
         .amount;
 
     assert!(
-        balance_after_approve < balance_before_approve,
+        balance_after_approve.as_yoctonear() < balance_before_approve.as_yoctonear(),
         "User balance should decrease after approval"
     );
 
@@ -610,7 +617,11 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
 
     // Balance should be approximately restored (minus gas fees)
     // We check that the difference is less than 0.1 NEAR (gas fees)
-    let balance_diff = (balance_before_approve as i128 - balance_after_reject as i128).abs();
+    let balance_diff = if balance_before_approve.as_yoctonear() > balance_after_reject.as_yoctonear() {
+        balance_before_approve.as_yoctonear() - balance_after_reject.as_yoctonear()
+    } else {
+        balance_after_reject.as_yoctonear() - balance_before_approve.as_yoctonear()
+    };
     assert!(
         balance_diff < 100_000_000_000_000_000_000_000, // 0.1 NEAR
         "Balance should be approximately restored after refund"
@@ -681,7 +692,9 @@ async fn test_revenue_generation() -> Result<(), Box<dyn std::error::Error>> {
     let markup = NearToken::from_yoctonear(2_160_000_000_000_000_000_000);
     let expected_revenue = NearToken::from_yoctonear(markup.as_yoctonear() * 3);
 
-    let actual_revenue = NearToken::from_yoctonear(final_balance - initial_balance);
+    let actual_revenue = NearToken::from_yoctonear(
+        final_balance.as_yoctonear().saturating_sub(initial_balance.as_yoctonear())
+    );
 
     // Verify revenue is at least the expected markup (may be slightly more due to gas refunds)
     assert!(
@@ -778,7 +791,9 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
         .await
         .unwrap();
 
-    let list_id: u64 = submit_result.data;
+    submit_result.assert_success();
+    // List IDs start from 0 and increment
+    let list_id: u64 = 0;
 
     // Attacker tries to approve the list (should fail)
     let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
