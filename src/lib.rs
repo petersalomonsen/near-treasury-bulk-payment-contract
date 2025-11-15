@@ -65,6 +65,12 @@ impl Default for BulkPaymentContract {
 
 #[near]
 impl BulkPaymentContract {
+    /// Initialize the contract
+    #[init]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
     /// Calculate storage cost for payment records with 10% markup
     /// Storage includes: AccountId (max 100 chars) + u128 amount + status fields
     #[payable]
@@ -344,10 +350,339 @@ impl BulkPaymentContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use near_sdk::test_utils::{VMContextBuilder, accounts};
+    use near_sdk::testing_env;
+
+    fn get_context(predecessor: AccountId) -> VMContextBuilder {
+        let mut builder = VMContextBuilder::new();
+        builder.predecessor_account_id(predecessor);
+        builder
+    }
 
     #[test]
     fn test_initialization() {
         let contract = BulkPaymentContract::default();
         assert_eq!(contract.next_list_id, 0);
+    }
+
+    #[test]
+    fn test_storage_cost_calculation() {
+        let mut context = get_context(accounts(0));
+        
+        // Calculate expected cost for 10 records
+        // 216 bytes per record * 10 = 2160 bytes
+        // 2160 * 10^19 yoctoNEAR/byte = 21600000000000000000000 yoctoNEAR
+        // With 10% markup: 21600000000000000000000 * 1.1 = 23760000000000000000000 yoctoNEAR
+        let expected_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        
+        context.attached_deposit(expected_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        let result = contract.buy_storage(10);
+        
+        assert_eq!(result, expected_cost);
+        
+        // Verify credits were added
+        let credits = contract.view_storage_credits(accounts(0));
+        assert_eq!(credits.as_yoctonear(), 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "Exact deposit required")]
+    fn test_storage_wrong_deposit() {
+        let mut context = get_context(accounts(0));
+        context.attached_deposit(NearToken::from_yoctonear(1_000_000));
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10); // Should panic with wrong deposit
+    }
+
+    #[test]
+    fn test_submit_list_deducts_credits() {
+        let mut context = get_context(accounts(0));
+        
+        // First buy storage
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10);
+        
+        // Now submit a list with 2 payments
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+            PaymentInput {
+                recipient: accounts(2),
+                amount: U128(2_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id = contract.submit_list("native".to_string(), payments);
+        
+        // Verify credits were deducted (10 - 2 = 8)
+        let credits = contract.view_storage_credits(accounts(0));
+        assert_eq!(credits.as_yoctonear(), 8);
+        
+        // Verify list was created
+        assert_eq!(list_id, 0);
+        let list = contract.view_list(0);
+        assert_eq!(list.payments.len(), 2);
+        assert_eq!(list.submitter, accounts(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient storage credits")]
+    fn test_submit_list_insufficient_credits() {
+        let context = get_context(accounts(0));
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        // Should panic - no storage credits
+        contract.submit_list("native".to_string(), payments);
+    }
+
+    #[test]
+    fn test_approve_list() {
+        let mut context = get_context(accounts(0));
+        
+        // Setup: buy storage and submit list
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10);
+        
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+            PaymentInput {
+                recipient: accounts(2),
+                amount: U128(2_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id = contract.submit_list("native".to_string(), payments);
+        
+        // Approve with exact deposit (3 NEAR total)
+        let total_deposit = NearToken::from_yoctonear(3_000_000_000_000_000_000_000_000);
+        context.attached_deposit(total_deposit);
+        testing_env!(context.build());
+        
+        contract.approve_list(list_id);
+        
+        // Verify status changed
+        let list = contract.view_list(list_id);
+        assert!(matches!(list.status, ListStatus::Approved));
+    }
+
+    #[test]
+    #[should_panic(expected = "Exact deposit required")]
+    fn test_approve_list_wrong_deposit() {
+        let mut context = get_context(accounts(0));
+        
+        // Setup
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10);
+        
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id = contract.submit_list("native".to_string(), payments);
+        
+        // Try to approve with wrong deposit
+        let wrong_deposit = NearToken::from_yoctonear(500_000_000_000_000_000_000_000);
+        context.attached_deposit(wrong_deposit);
+        testing_env!(context.build());
+        
+        contract.approve_list(list_id); // Should panic
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the submitter can approve the list")]
+    fn test_approve_list_unauthorized() {
+        let mut context = get_context(accounts(0));
+        
+        // Setup: user 0 submits
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10);
+        
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id = contract.submit_list("native".to_string(), payments);
+        
+        // User 1 tries to approve (should fail)
+        context = get_context(accounts(1));
+        let total_deposit = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
+        context.attached_deposit(total_deposit);
+        testing_env!(context.build());
+        
+        contract.approve_list(list_id); // Should panic
+    }
+
+    #[test]
+    fn test_retry_failed() {
+        let mut context = get_context(accounts(0));
+        
+        // Setup
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10);
+        
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id = contract.submit_list("unsupported_token".to_string(), payments);
+        
+        // Approve
+        let total_deposit = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
+        context.attached_deposit(total_deposit);
+        testing_env!(context.build());
+        contract.approve_list(list_id);
+        
+        // Process (will fail due to unsupported token)
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        contract.payout_batch(list_id, None);
+        
+        // Verify failed
+        let list = contract.view_list(list_id);
+        assert!(matches!(list.payments[0].status, PaymentStatus::Failed { .. }));
+        
+        // Retry
+        contract.retry_failed(list_id);
+        
+        // Verify back to pending
+        let list_after = contract.view_list(list_id);
+        assert!(matches!(list_after.payments[0].status, PaymentStatus::Pending));
+    }
+
+    #[test]
+    fn test_reject_list() {
+        let mut context = get_context(accounts(0));
+        
+        // Setup
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10);
+        
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id = contract.submit_list("native".to_string(), payments);
+        
+        // Reject without approval first
+        contract.reject_list(list_id);
+        
+        let list = contract.view_list(list_id);
+        assert!(matches!(list.status, ListStatus::Rejected));
+    }
+
+    #[test]
+    fn test_multiple_lists() {
+        let mut context = get_context(accounts(0));
+        
+        // Buy storage
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 2);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(20);
+        
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        // Submit multiple lists
+        let payments1 = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let payments2 = vec![
+            PaymentInput {
+                recipient: accounts(2),
+                amount: U128(2_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id1 = contract.submit_list("native".to_string(), payments1);
+        let list_id2 = contract.submit_list("native".to_string(), payments2);
+        
+        assert_eq!(list_id1, 0);
+        assert_eq!(list_id2, 1);
+        
+        let list1 = contract.view_list(list_id1);
+        let list2 = contract.view_list(list_id2);
+        
+        assert_eq!(list1.payments[0].amount, 1_000_000_000_000_000_000_000_000);
+        assert_eq!(list2.payments[0].amount, 2_000_000_000_000_000_000_000_000);
     }
 }
