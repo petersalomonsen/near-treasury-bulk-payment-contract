@@ -1,8 +1,7 @@
 // NEAR Treasury Bulk Payment Contract
 // See: https://github.com/NEAR-DevHub/near-treasury/issues/101
-use near_sdk::{near, env, AccountId, NearToken, Promise};
-use near_sdk::collections::UnorderedMap;
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use near_sdk::{near, env, AccountId, NearToken, Promise, require};
+use near_sdk::store::UnorderedMap;
 
 #[near(contract_state)]
 pub struct BulkPaymentContract {
