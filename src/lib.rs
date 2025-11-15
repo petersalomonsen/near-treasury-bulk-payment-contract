@@ -1,5 +1,10 @@
 // NEAR Treasury Bulk Payment Contract
 // See: https://github.com/NEAR-DevHub/near-treasury/issues/101
+//
+// This contract enables batch payment processing with support for:
+// - Native NEAR tokens
+// - NEP-141 fungible tokens via NEAR Intents (intents.near)
+// - Storage-based fee model with 10% revenue margin
 use near_sdk::{near, env, AccountId, NearToken, Promise, require, log, Gas};
 use near_sdk::store::UnorderedMap;
 use near_sdk::json_types::U128;
