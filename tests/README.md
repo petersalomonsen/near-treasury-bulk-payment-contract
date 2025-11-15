@@ -1,31 +1,39 @@
 # Integration Tests
 
-This directory contains end-to-end integration tests using `near-workspaces`.
+This directory contains end-to-end integration tests using `near-sandbox` and `near-api`.
 
 ## Requirements
 
 The integration tests require:
-- Internet access to download the NEAR sandbox binary
-- `near-workspaces` crate with dependencies (`tokio`, `serde_json`)
+- System libraries for `hidapi` (part of `near-api` dependencies):
+  - On Ubuntu/Debian: `sudo apt-get install libudev-dev pkg-config`
+  - On Fedora/RHEL: `sudo dnf install systemd-devel`
+  - On macOS: Should work out of the box
+- `near-sandbox`, `near-api`, `cargo-near-build` crates
 
 ## Running Integration Tests
 
-To run the integration tests, you need to add the required dependencies back to `Cargo.toml`:
+The required dependencies are already in `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
 near-sdk = { version = "5.16", features = ["unit-testing"] }
-near-workspaces = { version = "0.21", features = ["unstable"] }
+near-sandbox = "0.2.0"
+near-api = "0.7.7"
+cargo-near-build = "0.8.0"
 tokio = { version = "1.12.0", features = ["full"] }
 serde_json = "1"
 ```
 
-Then build the WASM and run tests:
+Install system dependencies first (on Ubuntu/Debian):
 
 ```bash
-# Build the contract WASM
-cargo build --target wasm32-unknown-unknown --release
+sudo apt-get install libudev-dev pkg-config
+```
 
+Then run tests:
+
+```bash
 # Run all tests including integration tests
 cargo test
 ```

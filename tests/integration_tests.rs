@@ -1,59 +1,145 @@
 // Integration tests for NEAR Treasury Bulk Payment Contract
-// NOTE: These tests require near-workspaces sandbox which downloads near-sandbox binary.
-// In CI/sandboxed environments without internet access, these tests may fail to build.
-// The contract itself compiles and works correctly - these are end-to-end integration tests.
+// Uses near-sandbox and near-api instead of near-workspaces
 
-use near_sdk::NearToken;
-use near_workspaces::{Account, Contract};
-use serde_json::json;
+use near_sdk::{serde_json::json, AccountId, NearToken};
 
-const WASM_PATH: &str = "./target/wasm32-unknown-unknown/release/near_treasury_bulk_payment_contract.wasm";
+fn get_genesis_signer() -> std::sync::Arc<near_api::Signer> {
+    near_api::Signer::new(near_api::Signer::from_secret_key(
+        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY
+            .parse()
+            .unwrap(),
+    ))
+    .unwrap()
+}
+
+async fn create_account(
+    new_account_id: &AccountId,
+    balance: NearToken,
+    network_config: &near_api::NetworkConfig,
+) -> std::sync::Arc<near_api::Signer> {
+    near_api::Account::create_account(new_account_id.clone())
+        .fund_myself(
+            new_account_id.get_parent_account_id().unwrap().to_owned(),
+            balance,
+        )
+        .public_key(
+            near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY
+                .parse()
+                .unwrap(),
+        )
+        .unwrap()
+        .with_signer(get_genesis_signer())
+        .send_to(network_config)
+        .await
+        .unwrap()
+        .assert_success();
+    // We use the same keypair for the new account as the genesis account
+    get_genesis_signer()
+}
+
+async fn setup_contract(
+) -> Result<(near_sandbox::Sandbox, near_api::NetworkConfig, AccountId), Box<dyn std::error::Error>>
+{
+    let sandbox = near_sandbox::Sandbox::start_sandbox_with_version("2.7.1").await?;
+    let network_config = near_api::NetworkConfig {
+        network_name: "sandbox".to_string(),
+        rpc_endpoints: vec![near_api::RPCEndpoint::new(
+            sandbox.rpc_addr.parse().unwrap(),
+        )],
+        linkdrop_account_id: None,
+        ..near_api::NetworkConfig::testnet()
+    };
+
+    // Build the contract
+    let contract_wasm_path = cargo_near_build::build_with_cli(Default::default())?;
+
+    // Deploy contract
+    let contract_id: AccountId = format!(
+        "bulk-payment.{}",
+        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
+    )
+    .parse()
+    .unwrap();
+    let contract_signer =
+        create_account(&contract_id, NearToken::from_near(50), &network_config).await;
+
+    near_api::Contract::deploy(contract_id.clone())
+        .use_code(std::fs::read(contract_wasm_path).unwrap())
+        .with_init_call("new", ())
+        .unwrap()
+        .with_signer(contract_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
+
+    Ok((sandbox, network_config, contract_id))
+}
 
 #[tokio::test]
 async fn test_storage_purchase() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user = worker.dev_create_account().await?;
+    // Create user account
+    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
 
     // Calculate expected cost for 10 records
-    // 216 bytes per record * 10 = 2160 bytes
-    // 2160 * 10^19 yoctoNEAR/byte = 21600000000000000000000 yoctoNEAR
-    // With 10% markup: 21600000000000000000000 * 1.1 = 23760000000000000000000 yoctoNEAR
     let num_records = 10;
     let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
 
     // Get initial contract balance
-    let initial_balance = contract.view_account().await?.balance;
+    let initial_balance = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
 
     // Buy storage
-    let result = user
-        .call(contract.id(), "buy_storage")
-        .args_json(json!({ "num_records": num_records }))
+    near_api::Contract(contract_id.clone())
+        .call_function("buy_storage", json!({ "num_records": num_records }))
+        .unwrap()
+        .transaction()
         .deposit(storage_cost)
-        .transact()
-        .await?;
-
-    assert!(result.is_success(), "Storage purchase should succeed");
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Verify contract balance increased (revenue)
-    let final_balance = contract.view_account().await?.balance;
+    let final_balance = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
+
     assert!(
         final_balance > initial_balance,
         "Contract balance should increase (revenue generation)"
     );
 
     // Verify storage credits
-    let credits: NearToken = contract
-        .view("view_storage_credits")
-        .args_json(json!({ "account_id": user.id() }))
-        .await?
-        .json()?;
+    let credits: u128 = near_api::Contract(contract_id.clone())
+        .call_function(
+            "view_storage_credits",
+            json!({ "account_id": user_id }),
+        )
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
 
     assert_eq!(
-        credits.as_yoctonear(),
-        num_records,
+        credits, num_records as u128,
         "Storage credits should be tracked"
     );
 
@@ -62,78 +148,106 @@ async fn test_storage_purchase() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user = worker.dev_create_account().await?;
-    let recipient1 = worker.dev_create_account().await?;
-    let recipient2 = worker.dev_create_account().await?;
+    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
+
+    let recipient1: AccountId = format!("recipient1.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let recipient2: AccountId = format!("recipient2.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
 
     // Buy storage first
     let num_records = 5;
     let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-    
-    user.call(contract.id(), "buy_storage")
-        .args_json(json!({ "num_records": num_records }))
+
+    near_api::Contract(contract_id.clone())
+        .call_function("buy_storage", json!({ "num_records": num_records }))
+        .unwrap()
+        .transaction()
         .deposit(storage_cost)
-        .transact()
-        .await?;
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Submit payment list
     let payments = vec![
         json!({
-            "recipient": recipient1.id().to_string(),
+            "recipient": recipient1.to_string(),
             "amount": "1000000000000000000000000" // 1 NEAR
         }),
         json!({
-            "recipient": recipient2.id().to_string(),
+            "recipient": recipient2.to_string(),
             "amount": "2000000000000000000000000" // 2 NEAR
         }),
     ];
 
-    let submit_result = user
-        .call(contract.id(), "submit_list")
-        .args_json(json!({
-            "token_id": "native",
-            "payments": payments
-        }))
-        .transact()
-        .await?;
+    let submit_result = near_api::Contract(contract_id.clone())
+        .call_function(
+            "submit_list",
+            json!({
+                "token_id": "native",
+                "payments": payments
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap();
 
-    assert!(submit_result.is_success(), "Submit list should succeed");
-    let list_id: u64 = submit_result.json()?;
+    submit_result.assert_success();
+    let list_id: u64 = submit_result.data;
 
     // Verify storage credits were deducted
-    let credits: NearToken = contract
-        .view("view_storage_credits")
-        .args_json(json!({ "account_id": user.id() }))
-        .await?
-        .json()?;
+    let credits: u128 = near_api::Contract(contract_id.clone())
+        .call_function(
+            "view_storage_credits",
+            json!({ "account_id": user_id }),
+        )
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
 
     assert_eq!(
-        credits.as_yoctonear(),
-        num_records - 2,
+        credits,
+        (num_records - 2) as u128,
         "Storage credits should be deducted"
     );
 
     // Approve the list with exact deposit
     let total_amount = NearToken::from_yoctonear(3_000_000_000_000_000_000_000_000); // 3 NEAR
-    let approve_result = user
-        .call(contract.id(), "approve_list")
-        .args_json(json!({ "list_ref": list_id }))
+    near_api::Contract(contract_id.clone())
+        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
         .deposit(total_amount)
-        .transact()
-        .await?;
-
-    assert!(approve_result.is_success(), "Approve list should succeed");
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // View the list to verify status
-    let list: serde_json::Value = contract
-        .view("view_list")
-        .args_json(json!({ "list_ref": list_id }))
-        .await?
-        .json()?;
+    let list: serde_json::Value = near_api::Contract(contract_id.clone())
+        .call_function("view_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
 
     assert_eq!(list["status"], "Approved");
 
@@ -142,175 +256,244 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
 
 #[tokio::test]
 async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user = worker.dev_create_account().await?;
+    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user_signer = create_account(&user_id, NearToken::from_near(100), &network_config).await;
 
-    // Buy storage for 250 payments
-    let num_records = 250;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 25);
-    
-    user.call(contract.id(), "buy_storage")
-        .args_json(json!({ "num_records": num_records }))
+    // Buy storage for 250 payments (need 250 credits, buy 260 to be safe)
+    let num_records = 260;
+    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 26);
+
+    near_api::Contract(contract_id.clone())
+        .call_function("buy_storage", json!({ "num_records": num_records }))
+        .unwrap()
+        .transaction()
         .deposit(storage_cost)
-        .transact()
-        .await?;
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Create 250 payment entries
     let mut payments = Vec::new();
-    let mut total_amount = 0u128;
     for i in 0..250 {
-        let recipient = worker.dev_create_account().await?;
-        let amount = 1_000_000_000_000_000_000_000_000u128; // 1 NEAR
+        let recipient: AccountId = format!(
+            "recipient{}.{}",
+            i,
+            near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
+        )
+        .parse()
+        .unwrap();
         payments.push(json!({
-            "recipient": recipient.id().to_string(),
-            "amount": amount.to_string()
+            "recipient": recipient.to_string(),
+            "amount": "1000000000000000000000000" // 1 NEAR
         }));
-        total_amount += amount;
     }
 
     // Submit large payment list
-    let submit_result = user
-        .call(contract.id(), "submit_list")
-        .args_json(json!({
-            "token_id": "native",
-            "payments": payments
-        }))
-        .transact()
-        .await?;
+    let submit_result = near_api::Contract(contract_id.clone())
+        .call_function(
+            "submit_list",
+            json!({
+                "token_id": "native",
+                "payments": payments
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap();
 
-    let list_id: u64 = submit_result.json()?;
+    let list_id: u64 = submit_result.data;
 
     // Approve the list
-    let approve_result = user
-        .call(contract.id(), "approve_list")
-        .args_json(json!({ "list_ref": list_id }))
-        .deposit(NearToken::from_yoctonear(total_amount))
-        .transact()
-        .await?;
-
-    assert!(approve_result.is_success(), "Approve large list should succeed");
+    let total_amount = NearToken::from_yoctonear(250_000_000_000_000_000_000_000_000); // 250 NEAR
+    near_api::Contract(contract_id.clone())
+        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
+        .deposit(total_amount)
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Process first batch (100 payments)
-    let payout1_result = user
-        .call(contract.id(), "payout_batch")
-        .args_json(json!({
-            "list_ref": list_id,
-            "max_payments": 100
-        }))
-        .transact()
-        .await?;
-
-    assert!(payout1_result.is_success(), "First batch should succeed");
+    near_api::Contract(contract_id.clone())
+        .call_function(
+            "payout_batch",
+            json!({
+                "list_ref": list_id,
+                "max_payments": 100
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .gas(near_sdk::Gas::from_tgas(300))
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Process second batch (100 payments)
-    let payout2_result = user
-        .call(contract.id(), "payout_batch")
-        .args_json(json!({
-            "list_ref": list_id,
-            "max_payments": 100
-        }))
-        .transact()
-        .await?;
-
-    assert!(payout2_result.is_success(), "Second batch should succeed");
+    near_api::Contract(contract_id.clone())
+        .call_function(
+            "payout_batch",
+            json!({
+                "list_ref": list_id,
+                "max_payments": 100
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .gas(near_sdk::Gas::from_tgas(300))
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Process third batch (50 payments)
-    let payout3_result = user
-        .call(contract.id(), "payout_batch")
-        .args_json(json!({
-            "list_ref": list_id,
-            "max_payments": 100
-        }))
-        .transact()
-        .await?;
-
-    assert!(payout3_result.is_success(), "Third batch should succeed");
+    near_api::Contract(contract_id.clone())
+        .call_function(
+            "payout_batch",
+            json!({
+                "list_ref": list_id,
+                "max_payments": 100
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .gas(near_sdk::Gas::from_tgas(300))
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_failed_payment_retry() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user = worker.dev_create_account().await?;
+    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
 
     // Buy storage
     let num_records = 10;
     let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-    
-    user.call(contract.id(), "buy_storage")
-        .args_json(json!({ "num_records": num_records }))
+
+    near_api::Contract(contract_id.clone())
+        .call_function("buy_storage", json!({ "num_records": num_records }))
+        .unwrap()
+        .transaction()
         .deposit(storage_cost)
-        .transact()
-        .await?;
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Submit payment list with unsupported token (will fail)
-    let recipient = worker.dev_create_account().await?;
-    let payments = vec![
-        json!({
-            "recipient": recipient.id().to_string(),
-            "amount": "1000000000000000000000000"
-        }),
-    ];
+    let recipient: AccountId = format!(
+        "recipient.{}",
+        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
+    )
+    .parse()
+    .unwrap();
+    let payments = vec![json!({
+        "recipient": recipient.to_string(),
+        "amount": "1000000000000000000000000"
+    })];
 
-    let submit_result = user
-        .call(contract.id(), "submit_list")
-        .args_json(json!({
-            "token_id": "unsupported_token",
-            "payments": payments
-        }))
-        .transact()
-        .await?;
+    let submit_result = near_api::Contract(contract_id.clone())
+        .call_function(
+            "submit_list",
+            json!({
+                "token_id": "unsupported_token",
+                "payments": payments
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap();
 
-    let list_id: u64 = submit_result.json()?;
+    let list_id: u64 = submit_result.data;
 
     // Approve the list
     let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
-    user.call(contract.id(), "approve_list")
-        .args_json(json!({ "list_ref": list_id }))
+    near_api::Contract(contract_id.clone())
+        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
         .deposit(total_amount)
-        .transact()
-        .await?;
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Process payments (should fail due to unsupported token)
-    let payout_result = user
-        .call(contract.id(), "payout_batch")
-        .args_json(json!({ "list_ref": list_id }))
-        .transact()
-        .await?;
-
-    assert!(payout_result.is_success(), "Payout batch call should succeed");
+    near_api::Contract(contract_id.clone())
+        .call_function("payout_batch", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // View list to verify Failed status
-    let list: serde_json::Value = contract
-        .view("view_list")
-        .args_json(json!({ "list_ref": list_id }))
-        .await?
-        .json()?;
+    let list: serde_json::Value = near_api::Contract(contract_id.clone())
+        .call_function("view_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
 
-    assert_eq!(list["payments"][0]["status"]["Failed"]["error"], "Unsupported token type");
+    assert_eq!(
+        list["payments"][0]["status"]["Failed"]["error"],
+        "Unsupported token type"
+    );
 
     // Retry failed payments
-    let retry_result = user
-        .call(contract.id(), "retry_failed")
-        .args_json(json!({ "list_ref": list_id }))
-        .transact()
-        .await?;
-
-    assert!(retry_result.is_success(), "Retry should succeed");
+    near_api::Contract(contract_id.clone())
+        .call_function("retry_failed", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Verify status is back to Pending
-    let list_after: serde_json::Value = contract
-        .view("view_list")
-        .args_json(json!({ "list_ref": list_id }))
-        .await?
-        .json()?;
+    let list_after: serde_json::Value = near_api::Contract(contract_id.clone())
+        .call_function("view_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
 
     assert_eq!(list_after["payments"][0]["status"], "Pending");
 
@@ -319,72 +502,115 @@ async fn test_failed_payment_retry() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user = worker.dev_create_account().await?;
-    let recipient = worker.dev_create_account().await?;
+    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
+
+    let recipient: AccountId = format!(
+        "recipient.{}",
+        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
+    )
+    .parse()
+    .unwrap();
 
     // Buy storage
     let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-    user.call(contract.id(), "buy_storage")
-        .args_json(json!({ "num_records": 5 }))
+    near_api::Contract(contract_id.clone())
+        .call_function("buy_storage", json!({ "num_records": 5 }))
+        .unwrap()
+        .transaction()
         .deposit(storage_cost)
-        .transact()
-        .await?;
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Submit and approve list
     let payments = vec![json!({
-        "recipient": recipient.id().to_string(),
+        "recipient": recipient.to_string(),
         "amount": "1000000000000000000000000"
     })];
 
-    let submit_result = user
-        .call(contract.id(), "submit_list")
-        .args_json(json!({
-            "token_id": "native",
-            "payments": payments
-        }))
-        .transact()
-        .await?;
+    let submit_result = near_api::Contract(contract_id.clone())
+        .call_function(
+            "submit_list",
+            json!({
+                "token_id": "native",
+                "payments": payments
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap();
 
-    let list_id: u64 = submit_result.json()?;
+    let list_id: u64 = submit_result.data;
 
     // Get user balance before approval
-    let balance_before_approve = user.view_account().await?.balance;
+    let balance_before_approve = near_api::Account(user_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
 
     // Approve
     let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
-    user.call(contract.id(), "approve_list")
-        .args_json(json!({ "list_ref": list_id }))
+    near_api::Contract(contract_id.clone())
+        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
         .deposit(total_amount)
-        .transact()
-        .await?;
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Get user balance after approval
-    let balance_after_approve = user.view_account().await?.balance;
+    let balance_after_approve = near_api::Account(user_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
+
     assert!(
         balance_after_approve < balance_before_approve,
         "User balance should decrease after approval"
     );
 
     // Reject the list
-    let reject_result = user
-        .call(contract.id(), "reject_list")
-        .args_json(json!({ "list_ref": list_id }))
-        .transact()
-        .await?;
-
-    assert!(reject_result.is_success(), "Reject should succeed");
+    near_api::Contract(contract_id.clone())
+        .call_function("reject_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Get user balance after rejection
-    let balance_after_reject = user.view_account().await?.balance;
-    
+    let balance_after_reject = near_api::Account(user_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
+
     // Balance should be approximately restored (minus gas fees)
     // We check that the difference is less than 0.1 NEAR (gas fees)
-    let balance_diff = (balance_before_approve.as_yoctonear() as i128 
-        - balance_after_reject.as_yoctonear() as i128).abs();
+    let balance_diff = (balance_before_approve as i128 - balance_after_reject as i128).abs();
     assert!(
         balance_diff < 100_000_000_000_000_000_000_000, // 0.1 NEAR
         "Balance should be approximately restored after refund"
@@ -395,40 +621,67 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
 
 #[tokio::test]
 async fn test_revenue_generation() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user1 = worker.dev_create_account().await?;
-    let user2 = worker.dev_create_account().await?;
-    let user3 = worker.dev_create_account().await?;
+    let user1: AccountId = format!("user1.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user1_signer = create_account(&user1, NearToken::from_near(50), &network_config).await;
+
+    let user2: AccountId = format!("user2.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user2_signer = create_account(&user2, NearToken::from_near(50), &network_config).await;
+
+    let user3: AccountId = format!("user3.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user3_signer = create_account(&user3, NearToken::from_near(50), &network_config).await;
 
     // Get initial contract balance
-    let initial_balance = contract.view_account().await?.balance;
+    let initial_balance = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
 
     // Multiple users buy storage
     let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-    
-    for user in [&user1, &user2, &user3] {
-        user.call(contract.id(), "buy_storage")
-            .args_json(json!({ "num_records": 10 }))
+
+    for (user, signer) in [
+        (user1.clone(), user1_signer),
+        (user2.clone(), user2_signer),
+        (user3.clone(), user3_signer),
+    ] {
+        near_api::Contract(contract_id.clone())
+            .call_function("buy_storage", json!({ "num_records": 10 }))
+            .unwrap()
+            .transaction()
             .deposit(storage_cost)
-            .transact()
-            .await?;
+            .with_signer(user, signer)
+            .send_to(&network_config)
+            .await
+            .unwrap()
+            .assert_success();
     }
 
     // Get final contract balance
-    let final_balance = contract.view_account().await?.balance;
+    let final_balance = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
 
     // Calculate expected revenue
     // 10% markup on 3 purchases of 10 records each
-    let base_cost = NearToken::from_yoctonear(21_600_000_000_000_000_000_000);
     let markup = NearToken::from_yoctonear(2_160_000_000_000_000_000_000);
     let expected_revenue = NearToken::from_yoctonear(markup.as_yoctonear() * 3);
 
-    let actual_revenue = NearToken::from_yoctonear(
-        final_balance.as_yoctonear() - initial_balance.as_yoctonear()
-    );
+    let actual_revenue = NearToken::from_yoctonear(final_balance - initial_balance);
 
     // Verify revenue is at least the expected markup (may be slightly more due to gas refunds)
     assert!(
@@ -443,72 +696,105 @@ async fn test_revenue_generation() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn test_exact_deposit_validation() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user = worker.dev_create_account().await?;
+    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
 
     // Try to buy storage with wrong deposit amount (should fail)
     let wrong_deposit = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
-    let result = user
-        .call(contract.id(), "buy_storage")
-        .args_json(json!({ "num_records": 10 }))
+    let result = near_api::Contract(contract_id.clone())
+        .call_function("buy_storage", json!({ "num_records": 10 }))
+        .unwrap()
+        .transaction()
         .deposit(wrong_deposit)
-        .transact()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
         .await;
 
-    assert!(result.is_err() || !result.unwrap().is_success(), 
-        "Should fail with wrong deposit amount");
+    // Should fail with execution error
+    assert!(
+        result.is_err() || !result.unwrap().is_success(),
+        "Should fail with wrong deposit amount"
+    );
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(WASM_PATH)?;
-    let contract = worker.dev_deploy(&wasm).await?;
+    let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
-    let user = worker.dev_create_account().await?;
-    let attacker = worker.dev_create_account().await?;
-    let recipient = worker.dev_create_account().await?;
+    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
+
+    let attacker: AccountId = format!("attacker.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
+        .parse()
+        .unwrap();
+    let attacker_signer =
+        create_account(&attacker, NearToken::from_near(50), &network_config).await;
+
+    let recipient: AccountId = format!(
+        "recipient.{}",
+        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
+    )
+    .parse()
+    .unwrap();
 
     // Setup: user buys storage and submits list
     let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-    user.call(contract.id(), "buy_storage")
-        .args_json(json!({ "num_records": 10 }))
+    near_api::Contract(contract_id.clone())
+        .call_function("buy_storage", json!({ "num_records": 10 }))
+        .unwrap()
+        .transaction()
         .deposit(storage_cost)
-        .transact()
-        .await?;
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     let payments = vec![json!({
-        "recipient": recipient.id().to_string(),
+        "recipient": recipient.to_string(),
         "amount": "1000000000000000000000000"
     })];
 
-    let submit_result = user
-        .call(contract.id(), "submit_list")
-        .args_json(json!({
-            "token_id": "native",
-            "payments": payments
-        }))
-        .transact()
-        .await?;
+    let submit_result = near_api::Contract(contract_id.clone())
+        .call_function(
+            "submit_list",
+            json!({
+                "token_id": "native",
+                "payments": payments
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap();
 
-    let list_id: u64 = submit_result.json()?;
+    let list_id: u64 = submit_result.data;
 
     // Attacker tries to approve the list (should fail)
     let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
-    let result = attacker
-        .call(contract.id(), "approve_list")
-        .args_json(json!({ "list_ref": list_id }))
+    let result = near_api::Contract(contract_id.clone())
+        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .transaction()
         .deposit(total_amount)
-        .transact()
+        .with_signer(attacker.clone(), attacker_signer.clone())
+        .send_to(&network_config)
         .await;
 
-    assert!(result.is_err() || !result.unwrap().is_success(), 
-        "Attacker should not be able to approve list");
+    assert!(
+        result.is_err() || !result.unwrap().is_success(),
+        "Attacker should not be able to approve list"
+    );
 
     Ok(())
 }
