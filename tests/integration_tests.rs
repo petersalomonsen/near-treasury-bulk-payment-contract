@@ -164,7 +164,7 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
 
     // Buy storage first
     let num_records = 5;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+    let storage_cost = NearToken::from_yoctonear(11_880_000_000_000_000_000_000);
 
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": num_records }))
@@ -522,7 +522,7 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
     .unwrap();
 
     // Buy storage
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+    let storage_cost = NearToken::from_yoctonear(11_880_000_000_000_000_000_000);
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": 5 }))
         .unwrap()
