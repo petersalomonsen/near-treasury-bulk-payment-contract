@@ -126,7 +126,7 @@ async fn test_storage_purchase() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Verify storage credits
-    let credits: u128 = near_api::Contract(contract_id.clone())
+    let credits: NearToken = near_api::Contract(contract_id.clone())
         .call_function(
             "view_storage_credits",
             json!({ "account_id": user_id }),
@@ -139,7 +139,7 @@ async fn test_storage_purchase() -> Result<(), Box<dyn std::error::Error>> {
         .data;
 
     assert_eq!(
-        credits, num_records as u128,
+        credits.as_yoctonear(), num_records as u128,
         "Storage credits should be tracked"
     );
 
@@ -209,7 +209,7 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
     let list_id: u64 = 0;
 
     // Verify storage credits were deducted
-    let credits: u128 = near_api::Contract(contract_id.clone())
+    let credits: NearToken = near_api::Contract(contract_id.clone())
         .call_function(
             "view_storage_credits",
             json!({ "account_id": user_id }),
@@ -222,7 +222,7 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
         .data;
 
     assert_eq!(
-        credits,
+        credits.as_yoctonear(),
         (num_records - 2) as u128,
         "Storage credits should be deducted"
     );
@@ -262,7 +262,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
     let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
         .parse()
         .unwrap();
-    let user_signer = create_account(&user_id, NearToken::from_near(100), &network_config).await;
+    let user_signer = create_account(&user_id, NearToken::from_near(300), &network_config).await;
 
     // Buy storage for 250 payments (need 250 credits, buy 260 to be safe)
     let num_records = 260;
