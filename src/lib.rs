@@ -295,7 +295,7 @@ impl BulkPaymentContract {
 
                     // Mark as Paid (in real implementation, would use callbacks)
                     payment.status = PaymentStatus::Paid;
-                } else if list.token_id == "native" {
+                } else if list.token_id == "native" || list.token_id == "near" {
                     // Native NEAR transfer
                     Promise::new(payment.recipient.clone())
                         .transfer(NearToken::from_yoctonear(payment.amount));
