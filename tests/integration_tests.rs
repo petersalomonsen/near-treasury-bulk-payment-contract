@@ -37,6 +37,51 @@ async fn create_account(
     get_genesis_signer()
 }
 
+/// Import a contract from mainnet to the sandbox
+/// Similar to: https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/util/sandbox.js#L457
+async fn import_contract(
+    sandbox: &near_sandbox::Sandbox,
+    network_config: &near_api::NetworkConfig,
+    account_id: &AccountId,
+    mainnet_account_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Configure mainnet connection
+    let mainnet_config = near_api::NetworkConfig::mainnet();
+    
+    // Fetch contract code from mainnet
+    let contract_code = near_api::Account(mainnet_account_id.parse().unwrap())
+        .view_code()
+        .fetch_from(&mainnet_config)
+        .await?
+        .data
+        .code;
+    
+    // Fetch contract state from mainnet
+    let account_info = near_api::Account(mainnet_account_id.parse().unwrap())
+        .view()
+        .fetch_from(&mainnet_config)
+        .await?
+        .data;
+    
+    // Create account in sandbox with the same balance
+    let account_signer = create_account(
+        account_id,
+        NearToken::from_yoctonear(account_info.amount.as_yoctonear()),
+        network_config,
+    )
+    .await;
+    
+    // Deploy the contract code to the sandbox account
+    near_api::Contract::deploy(account_id.clone())
+        .use_code(contract_code)
+        .with_signer(account_signer)
+        .send_to(network_config)
+        .await?
+        .assert_success();
+    
+    Ok(())
+}
+
 async fn setup_contract(
 ) -> Result<(near_sandbox::Sandbox, near_api::NetworkConfig, AccountId), Box<dyn std::error::Error>>
 {
@@ -467,7 +512,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
 
     // Import and setup wrap.near contract for wNEAR
     let wrap_near_id: AccountId = "wrap.near".parse().unwrap();
-    sandbox.import_contract(&wrap_near_id, "wrap.near").await?;
+    import_contract(&sandbox, &network_config, &wrap_near_id, "wrap.near").await?;
 
     // Initialize wrap.near contract
     near_api::Contract(wrap_near_id.clone())
