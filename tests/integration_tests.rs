@@ -506,7 +506,7 @@ async fn test_failed_payment_retry() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_reject_pending_list() -> Result<(), Box<dyn std::error::Error>> {
     let (_sandbox, network_config, contract_id) = setup_contract().await?;
 
     let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
@@ -534,13 +534,13 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
         .unwrap()
         .assert_success();
 
-    // Submit and approve list
+    // Submit list (but don't approve)
     let payments = vec![json!({
         "recipient": recipient.to_string(),
         "amount": "1000000000000000000000000"
     })];
 
-    let submit_result = near_api::Contract(contract_id.clone())
+    near_api::Contract(contract_id.clone())
         .call_function(
             "submit_list",
             json!({
@@ -553,49 +553,13 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
         .with_signer(user_id.clone(), user_signer.clone())
         .send_to(&network_config)
         .await
-        .unwrap();
-
-    submit_result.assert_success();
-    // List IDs start from 0 and increment
-    let list_id: u64 = 0;
-
-    // Get user balance before approval
-    let balance_before_approve = near_api::Account(user_id.clone())
-        .view()
-        .fetch_from(&network_config)
-        .await
-        .unwrap()
-        .data
-        .amount;
-
-    // Approve
-    let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
-    near_api::Contract(contract_id.clone())
-        .call_function("approve_list", json!({ "list_ref": list_id }))
-        .unwrap()
-        .transaction()
-        .deposit(total_amount)
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
         .unwrap()
         .assert_success();
 
-    // Get user balance after approval
-    let balance_after_approve = near_api::Account(user_id.clone())
-        .view()
-        .fetch_from(&network_config)
-        .await
-        .unwrap()
-        .data
-        .amount;
+    // List IDs start from 0 and increment
+    let list_id: u64 = 0;
 
-    assert!(
-        balance_after_approve.as_yoctonear() < balance_before_approve.as_yoctonear(),
-        "User balance should decrease after approval"
-    );
-
-    // Reject the list
+    // Reject the pending list
     near_api::Contract(contract_id.clone())
         .call_function("reject_list", json!({ "list_ref": list_id }))
         .unwrap()
@@ -606,26 +570,17 @@ async fn test_reject_list_with_refund() -> Result<(), Box<dyn std::error::Error>
         .unwrap()
         .assert_success();
 
-    // Get user balance after rejection
-    let balance_after_reject = near_api::Account(user_id.clone())
-        .view()
+    // Verify list is rejected
+    let list: serde_json::Value = near_api::Contract(contract_id.clone())
+        .call_function("view_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .read_only()
         .fetch_from(&network_config)
         .await
         .unwrap()
-        .data
-        .amount;
+        .data;
 
-    // Balance should be approximately restored (minus gas fees)
-    // We check that the difference is less than 0.1 NEAR (gas fees)
-    let balance_diff = if balance_before_approve.as_yoctonear() > balance_after_reject.as_yoctonear() {
-        balance_before_approve.as_yoctonear() - balance_after_reject.as_yoctonear()
-    } else {
-        balance_after_reject.as_yoctonear() - balance_before_approve.as_yoctonear()
-    };
-    assert!(
-        balance_diff < 100_000_000_000_000_000_000_000, // 0.1 NEAR
-        "Balance should be approximately restored after refund"
-    );
+    assert_eq!(list["status"], "Rejected");
 
     Ok(())
 }

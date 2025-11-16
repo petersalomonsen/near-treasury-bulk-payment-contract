@@ -281,7 +281,7 @@ impl BulkPaymentContract {
         log!("Processed {} payments for list {}", processed, list_ref);
     }
     
-    /// Reject a payment list and refund any approval deposit
+    /// Reject a payment list (only allowed before approval)
     pub fn reject_list(&mut self, list_ref: u64) {
         let caller = env::predecessor_account_id();
         
@@ -295,22 +295,15 @@ impl BulkPaymentContract {
         );
         
         require!(
-            !matches!(list.status, ListStatus::Rejected),
-            "List is already rejected"
+            matches!(list.status, ListStatus::Pending),
+            "Only pending lists can be rejected"
         );
         
         // Update status
         list.status = ListStatus::Rejected;
         self.payment_lists.insert(list_ref, list);
         
-        // Refund approval deposit if any
-        if let Some(deposit) = self.approval_deposits.get(&list_ref).copied() {
-            Promise::new(caller.clone()).transfer(deposit);
-            self.approval_deposits.remove(&list_ref);
-            log!("Payment list {} rejected, refunded {}", list_ref, deposit);
-        } else {
-            log!("Payment list {} rejected", list_ref);
-        }
+        log!("Payment list {} rejected", list_ref);
     }
     
     /// View a payment list with all details
@@ -653,6 +646,42 @@ mod tests {
         
         let list = contract.view_list(list_id);
         assert!(matches!(list.status, ListStatus::Rejected));
+    }
+
+    #[test]
+    #[should_panic(expected = "Only pending lists can be rejected")]
+    fn test_reject_approved_list_fails() {
+        let mut context = get_context(accounts(0));
+        
+        // Setup
+        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        context.attached_deposit(storage_cost);
+        testing_env!(context.build());
+        
+        let mut contract = BulkPaymentContract::default();
+        contract.buy_storage(10);
+        
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        
+        let payments = vec![
+            PaymentInput {
+                recipient: accounts(1),
+                amount: U128(1_000_000_000_000_000_000_000_000),
+            },
+        ];
+        
+        let list_id = contract.submit_list("native".to_string(), payments);
+        
+        // Approve the list
+        context.attached_deposit(NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000));
+        testing_env!(context.build());
+        contract.approve_list(list_id);
+        
+        // Try to reject an approved list - should panic
+        context.attached_deposit(NearToken::from_yoctonear(0));
+        testing_env!(context.build());
+        contract.reject_list(list_id);
     }
 
     #[test]
