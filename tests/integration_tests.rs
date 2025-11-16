@@ -46,7 +46,7 @@ async fn import_contract(
     network_config: &near_api::NetworkConfig,
     account_id: &AccountId,
     mainnet_account_id: &str,
-) -> Result<near_api::Signer, Box<dyn std::error::Error>> {
+) -> Result<std::sync::Arc<near_api::Signer>, Box<dyn std::error::Error>> {
     // Configure mainnet connection
     let mainnet_config = near_api::NetworkConfig::mainnet();
     
@@ -114,10 +114,11 @@ async fn import_contract(
     .await;
     
     // Deploy the contract code to the sandbox account
-    // For imported contracts, we just deploy the code without initialization
-    // (already initialized on mainnet)
+    // For imported contracts, we skip initialization (already initialized on mainnet)
+    // We need to use with_init_call even if empty to get the right builder type
     near_api::Contract::deploy(account_id.clone())
         .use_code(contract_code)
+        .without_init_call()
         .with_signer(account_signer.clone())
         .send_to(network_config)
         .await?
@@ -556,10 +557,9 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
 
     // Import and setup wrap.near contract for wNEAR
     let wrap_near_id: AccountId = "wrap.near".parse().unwrap();
-    let wrap_near_signer = import_contract(&sandbox, &network_config, &wrap_near_id, "wrap.near").await?;
+    let _wrap_near_signer = import_contract(&sandbox, &network_config, &wrap_near_id, "wrap.near").await?;
 
-    // Initialize wrap.near contract (note: wNEAR on mainnet doesn't need new() call,
-    // but we can try to call storage_deposit to verify it works)
+    // Create user account
     let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
         .parse()
         .unwrap();
@@ -574,14 +574,6 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
                 "registration_only": true
             }),
         )
-        .unwrap()
-        .transaction()
-        .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
         .unwrap()
         .transaction()
         .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
