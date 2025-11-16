@@ -279,8 +279,8 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .assert_success();
 
-    // Create 250 payment entries
-    let mut payments = Vec::new();
+    // Create recipient accounts and track initial balances
+    let mut recipients = Vec::new();
     for i in 0..250 {
         let recipient: AccountId = format!(
             "recipient{}.{}",
@@ -289,6 +289,13 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         )
         .parse()
         .unwrap();
+        create_account(&recipient, NearToken::from_near(1), &network_config).await;
+        recipients.push(recipient);
+    }
+
+    // Create 250 payment entries
+    let mut payments = Vec::new();
+    for recipient in recipients.iter() {
         payments.push(json!({
             "recipient": recipient.to_string(),
             "amount": "1000000000000000000000000" // 1 NEAR
@@ -317,6 +324,16 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
 
     // Approve the list
     let total_amount = NearToken::from_yoctonear(250_000_000_000_000_000_000_000_000); // 250 NEAR
+    
+    // Get contract balance before payouts
+    let contract_balance_before = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
+
     near_api::Contract(contract_id.clone())
         .call_function("approve_list", json!({ "list_ref": list_id }))
         .unwrap()
@@ -381,6 +398,63 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap()
         .assert_success();
+
+    // Verify all recipients received their payments
+    for (i, recipient) in recipients.iter().enumerate() {
+        let balance = near_api::Account(recipient.clone())
+            .view()
+            .fetch_from(&network_config)
+            .await
+            .unwrap()
+            .data
+            .amount;
+        
+        // Each recipient started with 1 NEAR and should have received 1 NEAR
+        // So balance should be approximately 2 NEAR (minus some gas fees)
+        assert!(
+            balance.as_yoctonear() > 1_500_000_000_000_000_000_000_000, // At least 1.5 NEAR
+            "Recipient {} should have received payment, balance: {} yoctoNEAR",
+            i,
+            balance.as_yoctonear()
+        );
+    }
+
+    // Verify contract balance is not less than before (storage revenue retained)
+    let contract_balance_after = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
+
+    assert!(
+        contract_balance_after.as_yoctonear() >= contract_balance_before.as_yoctonear(),
+        "Contract balance should not decrease after payouts. Before: {}, After: {}",
+        contract_balance_before.as_yoctonear(),
+        contract_balance_after.as_yoctonear()
+    );
+
+    // Verify all payments are marked as Paid
+    let list: serde_json::Value = near_api::Contract(contract_id.clone())
+        .call_function("view_list", json!({ "list_ref": list_id }))
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
+
+    let payments_array = list["payments"].as_array().unwrap();
+    assert_eq!(payments_array.len(), 250, "Should have 250 payments");
+    
+    for (i, payment) in payments_array.iter().enumerate() {
+        assert_eq!(
+            payment["status"], "Paid",
+            "Payment {} should be marked as Paid",
+            i
+        );
+    }
 
     Ok(())
 }
