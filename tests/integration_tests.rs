@@ -41,8 +41,9 @@ async fn create_account(
 /// Import a contract from mainnet to the sandbox
 /// Similar to: https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/util/sandbox.js#L457
 /// Returns the signer for the imported account (same as genesis signer)
+/// Note: For top-level accounts, the account must be created via SandboxConfig.additional_accounts before calling this
 async fn import_contract(
-    sandbox: &near_sandbox::Sandbox,
+    _sandbox: &near_sandbox::Sandbox,
     network_config: &near_api::NetworkConfig,
     account_id: &AccountId,
     mainnet_account_id: &str,
@@ -50,7 +51,7 @@ async fn import_contract(
     // Configure mainnet connection
     let mainnet_config = near_api::NetworkConfig::mainnet();
     
-    // Fetch contract code and account info from mainnet
+    // Fetch contract code from mainnet
     let mainnet_rpc_url = mainnet_config.rpc_endpoints[0].url.as_str();
     let client = reqwest::Client::new();
     
@@ -80,49 +81,30 @@ async fn import_contract(
     let contract_code = base64::engine::general_purpose::STANDARD
         .decode(contract_code_base64)?;
     
-    // View account
-    let account_request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": "dontcare",
-        "method": "query",
-        "params": {
-            "request_type": "view_account",
-            "finality": "final",
-            "account_id": mainnet_account_id
-        }
-    });
+    // Use genesis signer for the pre-created account
+    let account_signer = get_genesis_signer();
     
-    let account_response: serde_json::Value = client
-        .post(mainnet_rpc_url)
-        .json(&account_request)
-        .send()
-        .await?
-        .json()
-        .await?;
-    
-    let account_amount_str = account_response["result"]["amount"]
-        .as_str()
-        .ok_or("Failed to get amount")?;
-    let account_amount = account_amount_str.parse::<u128>()?;
-    
-    // Create account in sandbox with the same balance
-    let account_signer = create_account(
-        account_id,
-        NearToken::from_yoctonear(account_amount),
-        network_config,
-    )
-    .await;
-    
-    // Deploy the contract code to the sandbox account
-    // For imported contracts, we skip initialization (already initialized on mainnet)
-    // We need to use with_init_call even if empty to get the right builder type
-    near_api::Contract::deploy(account_id.clone())
-        .use_code(contract_code)
-        .without_init_call()
-        .with_signer(account_signer.clone())
-        .send_to(network_config)
-        .await?
-        .assert_success();
+    // Deploy the contract code to the sandbox account (which should already exist)
+    // For wrap.near, we need to initialize it since it's a fresh deployment
+    if mainnet_account_id == "wrap.near" {
+        near_api::Contract::deploy(account_id.clone())
+            .use_code(contract_code)
+            .with_init_call("new", json!({}))
+            .unwrap()
+            .with_signer(account_signer.clone())
+            .send_to(network_config)
+            .await?
+            .assert_success();
+    } else {
+        // For other contracts, skip initialization (already initialized on mainnet)
+        near_api::Contract::deploy(account_id.clone())
+            .use_code(contract_code)
+            .without_init_call()
+            .with_signer(account_signer.clone())
+            .send_to(network_config)
+            .await?
+            .assert_success();
+    }
     
     Ok(account_signer)
 }
@@ -130,7 +112,21 @@ async fn import_contract(
 async fn setup_contract(
 ) -> Result<(near_sandbox::Sandbox, near_api::NetworkConfig, AccountId), Box<dyn std::error::Error>>
 {
-    let sandbox = near_sandbox::Sandbox::start_sandbox_with_version("2.7.1").await?;
+    // Create sandbox with pre-configured accounts including wrap.near for FT tests
+    let wrap_near_account = near_sandbox::GenesisAccount {
+        account_id: "wrap.near".parse().unwrap(),
+        balance: near_sdk::NearToken::from_near(1000),
+        private_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.to_string(),
+        public_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),
+    };
+    
+    let sandbox = near_sandbox::Sandbox::start_sandbox_with_config(
+        near_sandbox::config::SandboxConfig {
+            additional_accounts: vec![wrap_near_account],
+            ..Default::default()
+        }
+    ).await?;
+    
     let network_config = near_api::NetworkConfig {
         network_name: "sandbox".to_string(),
         rpc_endpoints: vec![near_api::RPCEndpoint::new(
@@ -661,6 +657,24 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
 
     submit_result.assert_success();
     let list_id: u64 = 0;
+
+    // Register contract account with wrap.near to receive FT transfers
+    near_api::Contract(wrap_near_id.clone())
+        .call_function(
+            "storage_deposit",
+            json!({
+                "account_id": contract_id.to_string(),
+                "registration_only": true
+            }),
+        )
+        .unwrap()
+        .transaction()
+        .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
+        .with_signer(user_id.clone(), user_signer.clone())
+        .send_to(&network_config)
+        .await
+        .unwrap()
+        .assert_success();
 
     // Transfer wNEAR to contract for the payment
     near_api::Contract(wrap_near_id.clone())
