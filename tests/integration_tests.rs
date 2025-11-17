@@ -634,7 +634,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Submit payment list with wNEAR
+    // Submit payment list with wNEAR (using contract ID directly, not nep141: prefix)
     let payments = vec![json!({
         "recipient": recipient_id.to_string(),
         "amount": "10000000000000000000000000" // 10 wNEAR
@@ -644,7 +644,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .call_function(
             "submit_list",
             json!({
-                "token_id": format!("nep141:{}", wrap_near_id),
+                "token_id": wrap_near_id.to_string(),
                 "payments": payments
             }),
         )
@@ -743,7 +743,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .data;
 
-    assert_eq!(recipient_balance, "\"10000000000000000000000000\"");
+    assert_eq!(recipient_balance, "10000000000000000000000000");
 
     Ok(())
 }

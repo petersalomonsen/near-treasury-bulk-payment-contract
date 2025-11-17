@@ -301,10 +301,9 @@ impl BulkPaymentContract {
                         .transfer(NearToken::from_yoctonear(payment.amount));
 
                     payment.status = PaymentStatus::Paid;
-                } else if list.token_id.starts_with("nep141:") {
-                    // NEP-141 fungible token transfer
-                    let token_contract = list.token_id.trim_start_matches("nep141:");
-                    let token_account: AccountId = token_contract
+                } else {
+                    // NEP-141 fungible token transfer - token_id is the contract address
+                    let token_account: AccountId = list.token_id
                         .parse()
                         .expect("Invalid token contract address");
 
@@ -323,10 +322,6 @@ impl BulkPaymentContract {
                     );
 
                     payment.status = PaymentStatus::Paid;
-                } else {
-                    payment.status = PaymentStatus::Failed {
-                        error: "Unsupported token type".to_string(),
-                    };
                 }
 
                 processed += 1;

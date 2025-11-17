@@ -7,4 +7,4 @@ rustup target add wasm32-unknown-unknown
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/latest/download/cargo-near-installer.sh | sh
 
 sudo apt update
-sudo apt install -y pkg-config
+sudo apt install -y pkg-config libudev-dev
