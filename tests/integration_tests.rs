@@ -555,11 +555,11 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
     let _wrap_near_signer =
         import_contract(&sandbox, &network_config, &wrap_near_id, "wrap.near").await?;
 
-    // Create user account
+    // Create user account with more balance for 100 recipients
     let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
         .parse()
         .unwrap();
-    let user_signer = create_account(&user_id, NearToken::from_near(100), &network_config).await;
+    let user_signer = create_account(&user_id, NearToken::from_near(200), &network_config).await;
 
     // Register user with wNEAR
     near_api::Contract(wrap_near_id.clone())
@@ -579,21 +579,21 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Deposit NEAR to get wNEAR
+    // Deposit NEAR to get wNEAR (150 NEAR for 100 recipients at 1 wNEAR each, plus overhead)
     near_api::Contract(wrap_near_id.clone())
         .call_function("near_deposit", json!({}))
         .unwrap()
         .transaction()
-        .deposit(NearToken::from_near(50))
+        .deposit(NearToken::from_near(150))
         .with_signer(user_id.clone(), user_signer.clone())
         .send_to(&network_config)
         .await
         .unwrap()
         .assert_success();
 
-    // Buy storage
-    let num_records = 5;
-    let storage_cost = NearToken::from_yoctonear(11_880_000_000_000_000_000_000);
+    // Buy storage for 100 recipients
+    let num_records = 100;
+    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 10); // 10x for 100 records
 
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": num_records }))
@@ -606,39 +606,47 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Create recipient account
-    let recipient_id: AccountId = format!(
-        "recipient.{}",
-        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
-    )
-    .parse()
-    .unwrap();
-    let _recipient_signer =
+    // Create 100 recipient accounts
+    let mut recipients = Vec::new();
+    for i in 0..100 {
+        let recipient_id: AccountId = format!(
+            "ftrecipient{}.{}",
+            i,
+            near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
+        )
+        .parse()
+        .unwrap();
         create_account(&recipient_id, NearToken::from_near(1), &network_config).await;
 
-    // Register recipient with wNEAR
-    near_api::Contract(wrap_near_id.clone())
-        .call_function(
-            "storage_deposit",
-            json!({
-                "account_id": recipient_id.to_string(),
-                "registration_only": true
-            }),
-        )
-        .unwrap()
-        .transaction()
-        .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
+        // Register recipient with wNEAR
+        near_api::Contract(wrap_near_id.clone())
+            .call_function(
+                "storage_deposit",
+                json!({
+                    "account_id": recipient_id.to_string(),
+                    "registration_only": true
+                }),
+            )
+            .unwrap()
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
+            .with_signer(user_id.clone(), user_signer.clone())
+            .send_to(&network_config)
+            .await
+            .unwrap()
+            .assert_success();
 
-    // Submit payment list with wNEAR (using contract ID directly, not nep141: prefix)
-    let payments = vec![json!({
-        "recipient": recipient_id.to_string(),
-        "amount": "10000000000000000000000000" // 10 wNEAR
-    })];
+        recipients.push(recipient_id);
+    }
+
+    // Create payment list with 100 recipients (1 wNEAR each)
+    let mut payments = Vec::new();
+    for recipient in recipients.iter() {
+        payments.push(json!({
+            "recipient": recipient.to_string(),
+            "amount": "1000000000000000000000000" // 1 wNEAR
+        }));
+    }
 
     let submit_result = near_api::Contract(contract_id.clone())
         .call_function(
@@ -676,49 +684,29 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Transfer wNEAR to contract for the payment
+    // Approve the list using ft_transfer_call (NEP-141 standard)
+    // This will call ft_on_transfer on the contract with the list_id as msg
+    let total_amount_str = "100000000000000000000000000"; // 100 wNEAR
     near_api::Contract(wrap_near_id.clone())
         .call_function(
-            "ft_transfer",
+            "ft_transfer_call",
             json!({
                 "receiver_id": contract_id.to_string(),
-                "amount": "10000000000000000000000000"
+                "amount": total_amount_str,
+                "msg": list_id.to_string()
             }),
         )
         .unwrap()
         .transaction()
         .deposit(NearToken::from_yoctonear(1))
+        .gas(near_sdk::Gas::from_tgas(100))
         .with_signer(user_id.clone(), user_signer.clone())
         .send_to(&network_config)
         .await
         .unwrap()
         .assert_success();
 
-    // Approve the list
-    let total_amount = NearToken::from_yoctonear(10_000_000_000_000_000_000_000_000);
-    near_api::Contract(contract_id.clone())
-        .call_function("approve_list", json!({ "list_ref": list_id }))
-        .unwrap()
-        .transaction()
-        .deposit(total_amount)
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
-
-    // Process payment with sufficient gas for cross-contract call
-    near_api::Contract(contract_id.clone())
-        .call_function("payout_batch", json!({ "list_ref": list_id }))
-        .unwrap()
-        .transaction()
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
-
-    // Verify payment status
+    // Verify list is approved
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
         .call_function("view_list", json!({ "list_ref": list_id }))
         .unwrap()
@@ -728,14 +716,59 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .data;
 
-    assert_eq!(list["payments"][0]["status"], "Paid");
+    assert_eq!(
+        list["status"], "Approved",
+        "List should be approved after ft_transfer_call"
+    );
 
-    // Verify recipient received wNEAR
-    let recipient_balance: String = near_api::Contract(wrap_near_id.clone())
-        .call_function(
-            "ft_balance_of",
-            json!({ "account_id": recipient_id.to_string() }),
-        )
+    // Process payments in batches of 5 (FT transfers require cross-contract calls)
+    // Each ft_transfer needs ~50 TGas, so 5 payments = ~250 TGas + overhead
+    // We need to process 100 payments, so 20 batches of 5
+    for batch in 0..20 {
+        near_api::Contract(contract_id.clone())
+            .call_function(
+                "payout_batch",
+                json!({ "list_ref": list_id, "max_payments": 5 }),
+            )
+            .unwrap()
+            .transaction()
+            .gas(near_sdk::Gas::from_tgas(300))
+            .with_signer(user_id.clone(), user_signer.clone())
+            .send_to(&network_config)
+            .await
+            .unwrap()
+            .assert_success();
+        
+        if (batch + 1) % 5 == 0 {
+            println!("Processed {} of 20 batches ({} payments complete)", 
+                     batch + 1, (batch + 1) * 5);
+        }
+    }
+
+    // Verify all 100 recipients received their wNEAR payments
+    for (i, recipient) in recipients.iter().enumerate() {
+        let recipient_balance: String = near_api::Contract(wrap_near_id.clone())
+            .call_function(
+                "ft_balance_of",
+                json!({ "account_id": recipient.to_string() }),
+            )
+            .unwrap()
+            .read_only()
+            .fetch_from(&network_config)
+            .await
+            .unwrap()
+            .data;
+
+        assert_eq!(
+            recipient_balance, "1000000000000000000000000",
+            "Recipient {} should have received 1 wNEAR",
+            i
+        );
+    }
+
+    // Verify all payments are marked as Paid
+    let list: serde_json::Value = near_api::Contract(contract_id.clone())
+        .call_function("view_list", json!({ "list_ref": list_id }))
         .unwrap()
         .read_only()
         .fetch_from(&network_config)
@@ -743,7 +776,16 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .data;
 
-    assert_eq!(recipient_balance, "10000000000000000000000000");
+    let payments_array = list["payments"].as_array().unwrap();
+    assert_eq!(payments_array.len(), 100, "Should have 100 payments");
+
+    for (i, payment) in payments_array.iter().enumerate() {
+        assert_eq!(
+            payment["status"], "Paid",
+            "Payment {} should be marked as Paid",
+            i
+        );
+    }
 
     Ok(())
 }

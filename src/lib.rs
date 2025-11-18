@@ -409,6 +409,67 @@ impl BulkPaymentContract {
             .copied()
             .unwrap_or(NearToken::from_yoctonear(0))
     }
+
+    /// NEP-141 ft_on_transfer callback for fungible token approval flow
+    /// This is called by the token contract after ft_transfer_call
+    /// Returns the amount to refund (0 if all tokens are kept)
+    pub fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> U128 {
+        // Parse msg as list_ref
+        let list_ref: u64 = msg.parse().expect("msg must be a valid list reference ID");
+
+        // Get the list
+        let mut list = self
+            .payment_lists
+            .get(&list_ref)
+            .expect("Payment list not found")
+            .clone();
+
+        // Validate that sender owns the list
+        require!(
+            list.submitter == sender_id,
+            "Only the submitter can approve the list via ft_transfer_call"
+        );
+
+        // Validate list is in Pending status
+        require!(
+            matches!(list.status, ListStatus::Pending),
+            "List must be in Pending status to approve via ft_transfer_call"
+        );
+
+        // Calculate total payment amount
+        let total_amount: u128 = list
+            .payments
+            .iter()
+            .map(|p| p.amount)
+            .try_fold(0u128, |acc, x| acc.checked_add(x))
+            .expect("Total payment amount overflow");
+
+        // Validate amount matches total
+        require!(
+            amount.0 == total_amount,
+            format!(
+                "Exact token amount required: {}, received: {}",
+                total_amount, amount.0
+            )
+        );
+
+        // Approve the list
+        list.status = ListStatus::Approved;
+        self.payment_lists.insert(list_ref, list);
+
+        // Store the deposit (in tokens, not NEAR)
+        self.approval_deposits
+            .insert(list_ref, NearToken::from_yoctonear(amount.0));
+
+        log!(
+            "Payment list {} approved via ft_transfer_call with {} tokens",
+            list_ref,
+            amount.0
+        );
+
+        // Return 0 to keep all tokens
+        U128(0)
+    }
 }
 
 #[cfg(test)]
