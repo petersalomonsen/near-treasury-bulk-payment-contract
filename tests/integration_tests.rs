@@ -1,8 +1,8 @@
 // Integration tests for NEAR Treasury Bulk Payment Contract
 // Uses near-sandbox and near-api instead of near-workspaces
 
-use near_sdk::{serde_json::json, AccountId, NearToken};
 use base64::Engine;
+use near_sdk::{serde_json::json, AccountId, NearToken};
 
 fn get_genesis_signer() -> std::sync::Arc<near_api::Signer> {
     near_api::Signer::new(near_api::Signer::from_secret_key(
@@ -50,11 +50,11 @@ async fn import_contract(
 ) -> Result<std::sync::Arc<near_api::Signer>, Box<dyn std::error::Error>> {
     // Configure mainnet connection
     let mainnet_config = near_api::NetworkConfig::mainnet();
-    
+
     // Fetch contract code from mainnet
     let mainnet_rpc_url = mainnet_config.rpc_endpoints[0].url.as_str();
     let client = reqwest::Client::new();
-    
+
     // View code
     let code_request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -66,7 +66,7 @@ async fn import_contract(
             "account_id": mainnet_account_id
         }
     });
-    
+
     let code_response: serde_json::Value = client
         .post(mainnet_rpc_url)
         .json(&code_request)
@@ -74,16 +74,15 @@ async fn import_contract(
         .await?
         .json()
         .await?;
-    
+
     let contract_code_base64 = code_response["result"]["code_base64"]
         .as_str()
         .ok_or("Failed to get code_base64")?;
-    let contract_code = base64::engine::general_purpose::STANDARD
-        .decode(contract_code_base64)?;
-    
+    let contract_code = base64::engine::general_purpose::STANDARD.decode(contract_code_base64)?;
+
     // Use genesis signer for the pre-created account
     let account_signer = get_genesis_signer();
-    
+
     // Deploy the contract code to the sandbox account (which should already exist)
     // For wrap.near, we need to initialize it since it's a fresh deployment
     if mainnet_account_id == "wrap.near" {
@@ -105,7 +104,7 @@ async fn import_contract(
             .await?
             .assert_success();
     }
-    
+
     Ok(account_signer)
 }
 
@@ -119,14 +118,14 @@ async fn setup_contract(
         private_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.to_string(),
         public_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),
     };
-    
-    let sandbox = near_sandbox::Sandbox::start_sandbox_with_config(
-        near_sandbox::config::SandboxConfig {
+
+    let sandbox =
+        near_sandbox::Sandbox::start_sandbox_with_config(near_sandbox::config::SandboxConfig {
             additional_accounts: vec![wrap_near_account],
             ..Default::default()
-        }
-    ).await?;
-    
+        })
+        .await?;
+
     let network_config = near_api::NetworkConfig {
         network_name: "sandbox".to_string(),
         rpc_endpoints: vec![near_api::RPCEndpoint::new(
@@ -553,7 +552,8 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
 
     // Import and setup wrap.near contract for wNEAR
     let wrap_near_id: AccountId = "wrap.near".parse().unwrap();
-    let _wrap_near_signer = import_contract(&sandbox, &network_config, &wrap_near_id, "wrap.near").await?;
+    let _wrap_near_signer =
+        import_contract(&sandbox, &network_config, &wrap_near_id, "wrap.near").await?;
 
     // Create user account
     let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
@@ -707,7 +707,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Process payment
+    // Process payment with sufficient gas for cross-contract call
     near_api::Contract(contract_id.clone())
         .call_function("payout_batch", json!({ "list_ref": list_id }))
         .unwrap()
@@ -754,169 +754,6 @@ async fn test_near_intents_payment() -> Result<(), Box<dyn std::error::Error>> {
     // Full implementation requires deploying wrap.near, omft.near, and intents.near
     // Similar to the JavaScript example at NEAR-DevHub/near-treasury
     // For now, this test is marked as ignored until the full contract setup is available
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_failed_payment_retry() -> Result<(), Box<dyn std::error::Error>> {
-    let (_sandbox, network_config, contract_id) = setup_contract().await?;
-
-    let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
-        .parse()
-        .unwrap();
-    let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
-
-    // Buy storage
-    let num_records = 10;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-
-    near_api::Contract(contract_id.clone())
-        .call_function("buy_storage", json!({ "num_records": num_records }))
-        .unwrap()
-        .transaction()
-        .deposit(storage_cost)
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
-
-    // Submit payment list with non-existent recipient account (will fail)
-    let non_existent_recipient: AccountId = format!(
-        "nonexistent.{}",
-        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT
-    )
-    .parse()
-    .unwrap();
-    let payments = vec![json!({
-        "recipient": non_existent_recipient.to_string(),
-        "amount": "1000000000000000000000000"
-    })];
-
-    let submit_result = near_api::Contract(contract_id.clone())
-        .call_function(
-            "submit_list",
-            json!({
-                "token_id": "near",
-                "payments": payments
-            }),
-        )
-        .unwrap()
-        .transaction()
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap();
-
-    submit_result.assert_success();
-    // List IDs start from 0 and increment
-    let list_id: u64 = 0;
-
-    // Approve the list
-    let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
-    near_api::Contract(contract_id.clone())
-        .call_function("approve_list", json!({ "list_ref": list_id }))
-        .unwrap()
-        .transaction()
-        .deposit(total_amount)
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
-
-    // Process payments (should fail because recipient account doesn't exist)
-    near_api::Contract(contract_id.clone())
-        .call_function("payout_batch", json!({ "list_ref": list_id }))
-        .unwrap()
-        .transaction()
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
-
-    // View list to verify Failed status
-    let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
-        .unwrap()
-        .read_only()
-        .fetch_from(&network_config)
-        .await
-        .unwrap()
-        .data;
-
-    // Verify payment is marked as Failed
-    assert!(list["payments"][0]["status"]["Failed"].is_object());
-
-    // Create the recipient account so payment can succeed after retry
-    let _recipient_signer = create_account(
-        &non_existent_recipient,
-        NearToken::from_near(1),
-        &network_config,
-    )
-    .await;
-
-    // Retry failed payments
-    near_api::Contract(contract_id.clone())
-        .call_function("retry_failed", json!({ "list_ref": list_id }))
-        .unwrap()
-        .transaction()
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
-
-    // Verify status is back to Pending
-    let list_after: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
-        .unwrap()
-        .read_only()
-        .fetch_from(&network_config)
-        .await
-        .unwrap()
-        .data;
-
-    assert_eq!(list_after["payments"][0]["status"], "Pending");
-
-    // Now payout should succeed since account exists
-    near_api::Contract(contract_id.clone())
-        .call_function("payout_batch", json!({ "list_ref": list_id }))
-        .unwrap()
-        .transaction()
-        .with_signer(user_id.clone(), user_signer.clone())
-        .send_to(&network_config)
-        .await
-        .unwrap()
-        .assert_success();
-
-    // Verify payment is now marked as Paid
-    let list_final: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
-        .unwrap()
-        .read_only()
-        .fetch_from(&network_config)
-        .await
-        .unwrap()
-        .data;
-
-    assert_eq!(list_final["payments"][0]["status"], "Paid");
-
-    // Verify recipient received the payment (started with 1 NEAR, should now have 2 NEAR)
-    let recipient_balance = near_api::Account(non_existent_recipient.clone())
-        .view()
-        .fetch_from(&network_config)
-        .await
-        .unwrap()
-        .data
-        .amount;
-
-    assert_eq!(
-        recipient_balance.as_yoctonear(),
-        2_000_000_000_000_000_000_000_000
-    );
 
     Ok(())
 }

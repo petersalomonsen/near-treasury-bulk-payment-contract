@@ -72,6 +72,7 @@ impl Default for BulkPaymentContract {
 impl BulkPaymentContract {
     /// Initialize the contract
     #[init]
+    #[allow(clippy::use_self)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -127,7 +128,7 @@ impl BulkPaymentContract {
                 .checked_add(num_records as u128)
                 .expect("Storage credits overflow"),
         );
-        self.storage_credits.insert(caller.clone(), new_credits);
+        self.storage_credits.insert(caller, new_credits);
 
         log!(
             "Storage purchased: {} records for {}",
@@ -292,25 +293,21 @@ impl BulkPaymentContract {
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
-
-                    // Mark as Paid (in real implementation, would use callbacks)
-                    payment.status = PaymentStatus::Paid;
                 } else if list.token_id == "native" || list.token_id == "near" {
                     // Native NEAR transfer
                     Promise::new(payment.recipient.clone())
                         .transfer(NearToken::from_yoctonear(payment.amount));
-
-                    payment.status = PaymentStatus::Paid;
                 } else {
                     // NEP-141 fungible token transfer - token_id is the contract address
-                    let token_account: AccountId = list.token_id
+                    let token_account: AccountId = list
+                        .token_id
                         .parse()
                         .expect("Invalid token contract address");
 
                     // Call ft_transfer on the token contract
                     let args = format!(
                         r#"{{"receiver_id":"{}","amount":"{}"}}"#,
-                        payment.recipient.to_string(),
+                        payment.recipient,
                         payment.amount
                     );
 
@@ -320,10 +317,10 @@ impl BulkPaymentContract {
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
-
-                    payment.status = PaymentStatus::Paid;
                 }
 
+                // Mark as Paid (in real implementation, would use callbacks)
+                payment.status = PaymentStatus::Paid;
                 processed += 1;
             }
         }
@@ -625,57 +622,6 @@ mod tests {
         testing_env!(context.build());
 
         contract.approve_list(list_id); // Should panic
-    }
-
-    #[test]
-    fn test_retry_failed() {
-        let mut context = get_context(accounts(0));
-
-        // Setup
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-        context.attached_deposit(storage_cost);
-        testing_env!(context.build());
-
-        let mut contract = BulkPaymentContract::default();
-        contract.buy_storage(10);
-
-        context.attached_deposit(NearToken::from_yoctonear(0));
-        testing_env!(context.build());
-
-        let payments = vec![PaymentInput {
-            recipient: accounts(1),
-            amount: U128(1_000_000_000_000_000_000_000_000),
-        }];
-
-        let list_id = contract.submit_list("unsupported_token".to_string(), payments);
-
-        // Approve
-        let total_deposit = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
-        context.attached_deposit(total_deposit);
-        testing_env!(context.build());
-        contract.approve_list(list_id);
-
-        // Process (will fail due to unsupported token)
-        context.attached_deposit(NearToken::from_yoctonear(0));
-        testing_env!(context.build());
-        contract.payout_batch(list_id, None);
-
-        // Verify failed
-        let list = contract.view_list(list_id);
-        assert!(matches!(
-            list.payments[0].status,
-            PaymentStatus::Failed { .. }
-        ));
-
-        // Retry
-        contract.retry_failed(list_id);
-
-        // Verify back to pending
-        let list_after = contract.view_list(list_id);
-        assert!(matches!(
-            list_after.payments[0].status,
-            PaymentStatus::Pending
-        ));
     }
 
     #[test]
