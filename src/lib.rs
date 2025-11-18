@@ -6,15 +6,15 @@
 // - NEP-141 fungible tokens via NEAR Intents (intents.near)
 // - Storage-based fee model with 10% revenue margin
 use near_sdk::json_types::U128;
-use near_sdk::store::UnorderedMap;
+use near_sdk::store::IterableMap;
 use near_sdk::{env, log, near, require, AccountId, Gas, NearToken, Promise};
 
 #[near(contract_state)]
 pub struct BulkPaymentContract {
-    payment_lists: UnorderedMap<u64, PaymentList>,
-    storage_credits: UnorderedMap<AccountId, NearToken>,
+    payment_lists: IterableMap<u64, PaymentList>,
+    storage_credits: IterableMap<AccountId, NearToken>,
     next_list_id: u64,
-    approval_deposits: UnorderedMap<u64, NearToken>,
+    approval_deposits: IterableMap<u64, NearToken>,
 }
 
 #[near(serializers = [json])]
@@ -60,10 +60,10 @@ pub enum ListStatus {
 impl Default for BulkPaymentContract {
     fn default() -> Self {
         Self {
-            payment_lists: UnorderedMap::new(b"p"),
-            storage_credits: UnorderedMap::new(b"s"),
+            payment_lists: IterableMap::new(b"p"),
+            storage_credits: IterableMap::new(b"s"),
             next_list_id: 0,
-            approval_deposits: UnorderedMap::new(b"d"),
+            approval_deposits: IterableMap::new(b"d"),
         }
     }
 }
@@ -307,8 +307,7 @@ impl BulkPaymentContract {
                     // Call ft_transfer on the token contract
                     let args = format!(
                         r#"{{"receiver_id":"{}","amount":"{}"}}"#,
-                        payment.recipient,
-                        payment.amount
+                        payment.recipient, payment.amount
                     );
 
                     Promise::new(token_account).function_call(
