@@ -738,10 +738,13 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             .await
             .unwrap()
             .assert_success();
-        
+
         if (batch + 1) % 5 == 0 {
-            println!("Processed {} of 20 batches ({} payments complete)", 
-                     batch + 1, (batch + 1) * 5);
+            println!(
+                "Processed {} of 20 batches ({} payments complete)",
+                batch + 1,
+                (batch + 1) * 5
+            );
         }
     }
 
