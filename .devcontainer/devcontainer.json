@@ -1,0 +1,22 @@
+{
+  "name": "NEAR Treasury Bulk Payment Contract",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "1.86.0",
+      "profile": "minimal"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/git-lfs:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb"
+      ]
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "vscode"
+}
