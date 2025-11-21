@@ -1073,7 +1073,7 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
 /// Comprehensive end-to-end integration test for bulk BTC payment via NEAR Intents
 ///
 /// This test demonstrates the full workflow for bulk payments to BTC addresses:
-/// 1. Setup DAO treasury with FT tokens (using wNEAR as BTC proxy)
+/// 1. Setup DAO treasury with BTC tokens via omft.near and intents.near
 /// 2. Deploy and initialize bulk-payment contract  
 /// 3. Create bulk payment request for 100 BTC addresses (0.0001 BTC each = 0.01 BTC total)
 /// 4. Test approval with insufficient balance (should fail)
@@ -1082,20 +1082,36 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
 /// 7. Verify recipient BTC addresses are correctly recorded
 /// 8. Verify treasury accounting (balance decreases correctly)
 ///
-/// # Implementation Notes
-/// - Uses wNEAR (wrap.near) as a proxy for BTC tokens to demonstrate the flow
-/// - BTC addresses use deterministic format: bc1qtestaddress00 through bc1qtestaddress99
-/// - Token amounts: Scaled to match BTC semantics (0.0001 wNEAR = 0.0001 BTC equivalent)
-/// - In production with omft.near + intents.near, actual BTC transfers would occur
+/// # IMPORTANT: Required Setup for This Test
 ///
-/// # Production Architecture (omft.near + intents.near)
-/// - omft.near: Multi-token (MT) standard contract, similar to ERC-1155  
-/// - intents.near: Treasury management for cross-chain assets like BTC
-/// - Bulk-payment contract calls ft_withdraw on intents.near for each payment
-/// - intents.near handles actual BTC transfer to bc1 addresses via cross-chain bridge
+/// This test requires omft.near and intents.near contracts to be available. There are two options:
+///
+/// ## Option 1: Use Mainnet Contracts (Current Implementation)
+/// The test attempts to import contracts from mainnet. This requires:
+/// - omft.near and intents.near contracts must exist on mainnet
+/// - They must have the expected interfaces (ft_deposit, ft_transfer_call, ft_balance_of)
+/// - Network access to mainnet RPC
+///
+/// ## Option 2: Use Local WASM Artifacts (Recommended for CI)
+/// If mainnet contracts are not available, provide WASM files:
+/// - `tests/artifacts/omft_near.wasm` - OMFT contract binary
+/// - `tests/artifacts/intents_near.wasm` - Intents contract binary
+///
+/// To use local artifacts, modify the import_contract calls below or create a
+/// deploy_from_artifact helper function.
+///
+/// # Expected Behavior
+///
+/// - If contracts are available: Test runs and validates complete BTC payment flow
+/// - If contracts are not available: Test fails early with clear error message
+///
+/// # Architecture Notes
+/// - omft.near: Multi-token (MT) standard contract for BTC (similar to ERC-1155)
+/// - intents.near: Treasury management for cross-chain assets
+/// - BTC addresses: Use deterministic format bc1qtestaddress{XX} for testing
+/// - Token amounts: BTC uses 8 decimals (satoshis), so 0.0001 BTC = 10,000 satoshis
 ///
 /// This test uses async/await with tokio and sandbox flows, matching existing test patterns.
-/// The test is NOT marked with #[ignore] and will run when artifacts are available.
 #[tokio::test]
 async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
@@ -1106,7 +1122,8 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     println!("{}", "=".repeat(70));
     println!();
     println!("Setting up sandbox environment...");
-    println!("NOTE: Using omft.near for BTC tokens and intents.near for treasury management");
+    println!("NOTE: This test requires omft.near and intents.near contracts");
+    println!("      See test documentation for setup requirements");
     
     // Create pre-configured accounts for omft.near, intents.near, and dao.near
     let omft_account = near_sandbox::GenesisAccount {
@@ -1148,27 +1165,52 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     };
 
     // ========================================================================
-    // STEP 2: Import omft.near and intents.near contracts from mainnet
+    // STEP 2: Import omft.near and intents.near contracts
     // ========================================================================
-    println!("Importing omft.near contract from mainnet...");
+    println!("\nAttempting to import omft.near contract from mainnet...");
+    println!("NOTE: If this fails, you need to provide tests/artifacts/omft_near.wasm");
     
-    // IMPORTANT: This requires omft.near contract to exist on mainnet
-    // If not available, you would need to deploy from WASM artifact:
-    // - tests/artifacts/omft_near.wasm
     let omft_id: AccountId = "omft.near".parse().unwrap();
-    let _omft_signer = import_contract(&sandbox, &network_config, &omft_id, "omft.near").await?;
-    
-    println!("✓ omft.near deployed");
+    let _omft_signer = match import_contract(&sandbox, &network_config, &omft_id, "omft.near").await {
+        Ok(signer) => {
+            println!("✓ omft.near deployed from mainnet");
+            signer
+        }
+        Err(e) => {
+            eprintln!("\n❌ Failed to import omft.near from mainnet: {}", e);
+            eprintln!("\nTo run this test, you need one of:");
+            eprintln!("  1. omft.near contract deployed on mainnet with expected interface");
+            eprintln!("  2. Local WASM artifact: tests/artifacts/omft_near.wasm");
+            eprintln!("\nExpected omft.near interface:");
+            eprintln!("  - ft_deposit(owner_id, token, amount, msg, memo)");
+            eprintln!("  - Standard NEP-141 fungible token interface");
+            eprintln!("\nSee test documentation for more details.");
+            return Err(e);
+        }
+    };
 
-    println!("Importing intents.near contract from mainnet...");
+    println!("\nAttempting to import intents.near contract from mainnet...");
+    println!("NOTE: If this fails, you need to provide tests/artifacts/intents_near.wasm");
     
-    // IMPORTANT: This requires intents.near contract to exist on mainnet
-    // If not available, you would need to deploy from WASM artifact:
-    // - tests/artifacts/intents_near.wasm
     let intents_id: AccountId = "intents.near".parse().unwrap();
-    let _intents_signer = import_contract(&sandbox, &network_config, &intents_id, "intents.near").await?;
-    
-    println!("✓ intents.near deployed");
+    let _intents_signer = match import_contract(&sandbox, &network_config, &intents_id, "intents.near").await {
+        Ok(signer) => {
+            println!("✓ intents.near deployed from mainnet");
+            signer
+        }
+        Err(e) => {
+            eprintln!("\n❌ Failed to import intents.near from mainnet: {}", e);
+            eprintln!("\nTo run this test, you need one of:");
+            eprintln!("  1. intents.near contract deployed on mainnet with expected interface");
+            eprintln!("  2. Local WASM artifact: tests/artifacts/intents_near.wasm");
+            eprintln!("\nExpected intents.near interface:");
+            eprintln!("  - ft_transfer_call(token, receiver_id, amount, msg)");
+            eprintln!("  - ft_balance_of(token, account_id)");
+            eprintln!("  - storage_deposit(account_id, registration_only)");
+            eprintln!("\nSee test documentation for more details.");
+            return Err(e);
+        }
+    };
 
     // ========================================================================
     // STEP 3: Deposit BTC tokens to DAO treasury via intents contract
@@ -1184,7 +1226,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // Use ft_deposit on omft.near to deposit BTC tokens to intents for the DAO
     // This simulates a bridge deposit from Bitcoin network
     // Based on: https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/tests/intents/payment-request-ui.spec.js#L258-L278
-    near_api::Contract(omft_id.clone())
+    let deposit_result = near_api::Contract(omft_id.clone())
         .call_function(
             "ft_deposit",
             json!({
@@ -1204,10 +1246,35 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
         .with_signer(omft_id.clone(), get_genesis_signer())
         .send_to(&network_config)
-        .await?
-        .assert_success();
+        .await;
     
-    println!("✓ DAO treasury holds 0.01 BTC (1,000,000 satoshis) via intents.near");
+    match deposit_result {
+        Ok(result) => {
+            if result.is_success() {
+                println!("✓ DAO treasury holds 0.01 BTC (1,000,000 satoshis) via intents.near");
+            } else {
+                eprintln!("\n❌ ft_deposit call failed");
+                eprintln!("Transaction completed but did not succeed");
+                eprintln!("This likely means:");
+                eprintln!("  1. omft.near contract doesn't have ft_deposit method");
+                eprintln!("  2. The method signature is different than expected");
+                eprintln!("  3. The contract state is not properly initialized");
+                eprintln!("\nExpected ft_deposit signature:");
+                eprintln!("  fn ft_deposit(owner_id: AccountId, token: String, amount: String, msg: String, memo: String)");
+                return Err("ft_deposit failed".into());
+            }
+        }
+        Err(e) => {
+            eprintln!("\n❌ ft_deposit call failed: {}", e);
+            eprintln!("\nThis could mean:");
+            eprintln!("  1. omft.near contract doesn't have the expected interface");
+            eprintln!("  2. The contract is not properly initialized");
+            eprintln!("  3. The method parameters are incorrect");
+            eprintln!("\nFor a working example, see:");
+            eprintln!("  https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/tests/intents/payment-request-ui.spec.js#L258-L278");
+            return Err(Box::new(e));
+        }
+    }
 
     // Verify initial treasury balance in intents contract
     // The DAO should have BTC balance in intents.near
