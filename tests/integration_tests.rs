@@ -1099,17 +1099,25 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
 #[tokio::test]
 async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
-    // STEP 1: Setup sandbox with wrap.near (BTC proxy) and DAO treasury
+    // STEP 1: Setup sandbox with omft.near, intents.near, and DAO treasury
     // ========================================================================
     println!("\n{}", "=".repeat(70));
     println!("BULK BTC INTENTS PAYMENT TEST");
     println!("{}", "=".repeat(70));
     println!();
     println!("Setting up sandbox environment...");
-    println!("NOTE: Using wNEAR as proxy for BTC tokens to demonstrate the bulk payment flow");
+    println!("NOTE: Using omft.near for BTC tokens and intents.near for treasury management");
     
-    let wrap_near_account = near_sandbox::GenesisAccount {
-        account_id: "wrap.near".parse().unwrap(),
+    // Create pre-configured accounts for omft.near, intents.near, and dao.near
+    let omft_account = near_sandbox::GenesisAccount {
+        account_id: "omft.near".parse().unwrap(),
+        balance: near_sdk::NearToken::from_near(1000),
+        private_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.to_string(),
+        public_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),
+    };
+    
+    let intents_account = near_sandbox::GenesisAccount {
+        account_id: "intents.near".parse().unwrap(),
         balance: near_sdk::NearToken::from_near(1000),
         private_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.to_string(),
         public_key: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),
@@ -1124,7 +1132,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
 
     let sandbox = near_sandbox::Sandbox::start_sandbox_with_config(
         near_sandbox::config::SandboxConfig {
-            additional_accounts: vec![wrap_near_account, dao_account],
+            additional_accounts: vec![omft_account, intents_account, dao_account],
             ..Default::default()
         },
     )
@@ -1140,58 +1148,76 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     };
 
     // ========================================================================
-    // STEP 2: Import wrap.near contract from mainnet
+    // STEP 2: Import omft.near and intents.near contracts from mainnet
     // ========================================================================
-    println!("Importing wrap.near contract from mainnet...");
+    println!("Importing omft.near contract from mainnet...");
     
-    let wrap_near_id: AccountId = "wrap.near".parse().unwrap();
-    let _wrap_signer = import_contract(&sandbox, &network_config, &wrap_near_id, "wrap.near").await?;
+    // IMPORTANT: This requires omft.near contract to exist on mainnet
+    // If not available, you would need to deploy from WASM artifact:
+    // - tests/artifacts/omft_near.wasm
+    let omft_id: AccountId = "omft.near".parse().unwrap();
+    let _omft_signer = import_contract(&sandbox, &network_config, &omft_id, "omft.near").await?;
     
-    println!("✓ wrap.near deployed (simulating BTC token)");
+    println!("✓ omft.near deployed");
+
+    println!("Importing intents.near contract from mainnet...");
+    
+    // IMPORTANT: This requires intents.near contract to exist on mainnet
+    // If not available, you would need to deploy from WASM artifact:
+    // - tests/artifacts/intents_near.wasm
+    let intents_id: AccountId = "intents.near".parse().unwrap();
+    let _intents_signer = import_contract(&sandbox, &network_config, &intents_id, "intents.near").await?;
+    
+    println!("✓ intents.near deployed");
 
     // ========================================================================
-    // STEP 3: Setup DAO treasury with 0.01 BTC equivalent tokens
+    // STEP 3: Deposit BTC tokens to DAO treasury via intents contract
     // ========================================================================
-    println!("\nSetting up DAO treasury with 0.01 BTC equivalent...");
+    println!("\nDepositing 0.01 BTC to DAO treasury via intents...");
     
     let dao_id: AccountId = "dao.near".parse().unwrap();
     
-    // Register DAO with wrap.near
-    near_api::Contract(wrap_near_id.clone())
+    // BTC uses 8 decimals (satoshis)
+    // 0.01 BTC = 1,000,000 satoshis
+    let btc_amount = 1_000_000u128; // 0.01 BTC in satoshis
+    
+    // Use ft_deposit on omft.near to deposit BTC tokens to intents for the DAO
+    // This simulates a bridge deposit from Bitcoin network
+    // Based on: https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/tests/intents/payment-request-ui.spec.js#L258-L278
+    near_api::Contract(omft_id.clone())
         .call_function(
-            "storage_deposit",
+            "ft_deposit",
             json!({
-                "account_id": dao_id.to_string(),
-                "registration_only": true
+                "owner_id": intents_id.to_string(),
+                "token": "btc",
+                "amount": btc_amount.to_string(),
+                "msg": serde_json::to_string(&json!({ "receiver_id": dao_id.to_string() }))?,
+                "memo": format!("BRIDGED_FROM:{}", serde_json::to_string(&json!({
+                    "networkType": "btc",
+                    "chainId": "1",
+                    "txHash": "0xc6b7ecd5c7517a8f56ac7ec9befed7d26a459fc97c7d5cd7598d4e19b5a806b7"
+                }))?)
             }),
         )?
         .transaction()
+        .gas(near_sdk::Gas::from_tgas(300))
         .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
-        .with_signer(dao_id.clone(), get_genesis_signer())
+        .with_signer(omft_id.clone(), get_genesis_signer())
         .send_to(&network_config)
         .await?
         .assert_success();
     
-    // Deposit NEAR to get wNEAR for DAO treasury
-    // Simulating 0.01 BTC with 0.01 wNEAR
-    let treasury_initial_deposit = NearToken::from_yoctonear(10_000_000_000_000_000_000_000); // 0.01 NEAR
-    
-    near_api::Contract(wrap_near_id.clone())
-        .call_function("near_deposit", json!({}))?
-        .transaction()
-        .deposit(treasury_initial_deposit)
-        .with_signer(dao_id.clone(), get_genesis_signer())
-        .send_to(&network_config)
-        .await?
-        .assert_success();
-    
-    println!("✓ DAO treasury holds 0.01 wNEAR (simulating 0.01 BTC = 1,000,000 satoshis)");
+    println!("✓ DAO treasury holds 0.01 BTC (1,000,000 satoshis) via intents.near");
 
-    // Verify initial treasury balance
-    let initial_treasury_balance: String = near_api::Contract(wrap_near_id.clone())
+    // Verify initial treasury balance in intents contract
+    // The DAO should have BTC balance in intents.near
+    let initial_treasury_balance: String = near_api::Contract(intents_id.clone())
         .call_function(
             "ft_balance_of",
-            json!({ "account_id": dao_id.to_string() }),
+            json!({ 
+                "token": "btc",
+                "account_id": dao_id.to_string() 
+            }),
         )?
         .read_only()
         .fetch_from(&network_config)
@@ -1199,7 +1225,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .data;
     
     let initial_balance_num: u128 = initial_treasury_balance.parse()?;
-    println!("✓ Initial treasury balance: {} yoctoNEAR (0.01 wNEAR)", initial_balance_num);
+    println!("✓ Initial treasury BTC balance: {} satoshis (0.01 BTC)", initial_balance_num);
 
     // ========================================================================
     // STEP 4: Deploy and initialize bulk-payment contract
@@ -1260,8 +1286,9 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     
     let mut payments = Vec::new();
     
-    // Each recipient gets 0.0001 BTC equivalent (0.01 / 100)
-    let payment_amount = 100_000_000_000_000_000_000u128; // 0.0001 wNEAR
+    // Each recipient gets 0.0001 BTC = 10,000 satoshis (BTC has 8 decimals)
+    // Total: 100 * 10,000 = 1,000,000 satoshis = 0.01 BTC
+    let payment_amount = 10_000u128; // 0.0001 BTC in satoshis
     
     for i in 0..100 {
         // Generate deterministic BTC address (Bech32 SegWit format)
@@ -1274,10 +1301,11 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     }
     
     println!("✓ Generated 100 BTC addresses: bc1qtestaddress00 to bc1qtestaddress99");
-    println!("✓ Each address will receive 0.0001 wNEAR (simulating 10,000 satoshis)");
+    println!("✓ Each address will receive 0.0001 BTC (10,000 satoshis)");
     
     // Submit the payment list
-    let token_id = wrap_near_id.to_string();
+    // Token ID format for intents: "nep141:btc" for BTC withdrawals via intents.near
+    let token_id = "nep141:btc".to_string();
     
     let submit_result = near_api::Contract(contract_id.clone())
         .call_function(
@@ -1302,8 +1330,8 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // ========================================================================
     println!("\n--- TEST: Approval with insufficient balance ---");
     
-    // Register bulk-payment contract with wrap.near
-    near_api::Contract(wrap_near_id.clone())
+    // Register bulk-payment contract with intents.near for receiving transfers
+    near_api::Contract(intents_id.clone())
         .call_function(
             "storage_deposit",
             json!({
@@ -1319,12 +1347,14 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .assert_success();
     
     // Try with insufficient amount (half of required)
-    let insufficient_amount = 5_000_000_000_000_000_000_000u128; // 0.005 wNEAR
+    // 0.005 BTC = 500,000 satoshis
+    let insufficient_amount = 500_000u128;
     
-    let approval_result = near_api::Contract(wrap_near_id.clone())
+    let approval_result = near_api::Contract(intents_id.clone())
         .call_function(
             "ft_transfer_call",
             json!({
+                "token": "btc",
                 "receiver_id": contract_id.to_string(),
                 "amount": insufficient_amount.to_string(),
                 "msg": list_id.to_string()
@@ -1359,12 +1389,14 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // ========================================================================
     println!("\n--- TEST: Approval with correct balance ---");
     
-    let correct_amount = 10_000_000_000_000_000_000_000u128; // 0.01 wNEAR
+    // Correct amount: 0.01 BTC = 1,000,000 satoshis
+    let correct_amount = btc_amount; // 1,000,000 satoshis
     
-    let approval_result = near_api::Contract(wrap_near_id.clone())
+    let approval_result = near_api::Contract(intents_id.clone())
         .call_function(
             "ft_transfer_call",
             json!({
+                "token": "btc",
                 "receiver_id": contract_id.to_string(),
                 "amount": correct_amount.to_string(),
                 "msg": list_id.to_string()
@@ -1394,10 +1426,13 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // ========================================================================
     // STEP 9: Verify treasury balance decreased correctly
     // ========================================================================
-    let treasury_balance_after_approval: String = near_api::Contract(wrap_near_id.clone())
+    let treasury_balance_after_approval: String = near_api::Contract(intents_id.clone())
         .call_function(
             "ft_balance_of",
-            json!({ "account_id": dao_id.to_string() }),
+            json!({ 
+                "token": "btc",
+                "account_id": dao_id.to_string() 
+            }),
         )?
         .read_only()
         .fetch_from(&network_config)
@@ -1412,7 +1447,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         "Treasury balance should decrease by approval amount"
     );
     
-    println!("✓ Treasury balance: {} -> {} yoctoNEAR (transferred {})",
+    println!("✓ Treasury BTC balance: {} -> {} satoshis (transferred {})",
         initial_balance_num, balance_after_approval, correct_amount);
 
     // ========================================================================
@@ -1512,17 +1547,21 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     println!("✓ All 100 BTC addresses verified (bc1qtestaddress00-99)");
     println!("✓ Payment statuses: {} Paid, {} Failed", paid_count, failed_count);
     println!("  (Failures expected: BTC addresses aren't valid NEAR accounts)");
-    println!("  (In production with intents.near, these would process as BTC withdrawals)");
+    println!("  (In production, intents.near handles actual BTC withdrawals to these addresses)");
 
     // ========================================================================
     // STEP 12: Verify contract holds the approval tokens
     // ========================================================================
     println!("\n--- VERIFYING: Contract accounting ---");
     
-    let contract_balance: String = near_api::Contract(wrap_near_id.clone())
+    // Check BTC balance in intents.near for the contract
+    let contract_balance: String = near_api::Contract(intents_id.clone())
         .call_function(
             "ft_balance_of",
-            json!({ "account_id": contract_id.to_string() }),
+            json!({ 
+                "token": "btc",
+                "account_id": contract_id.to_string() 
+            }),
         )?
         .read_only()
         .fetch_from(&network_config)
@@ -1530,8 +1569,8 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .data;
     
     let contract_balance_num: u128 = contract_balance.parse()?;
-    println!("✓ Contract wNEAR balance: {} yoctoNEAR", contract_balance_num);
-    println!("✓ Contract holds approved tokens for payout");
+    println!("✓ Contract BTC balance: {} satoshis", contract_balance_num);
+    println!("✓ Contract holds approved BTC tokens for payout");
 
     // ========================================================================
     // FINAL SUMMARY
@@ -1541,23 +1580,24 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     println!("{}", "=".repeat(70));
     println!();
     println!("Summary:");
+    println!("  ✓ Deployed omft.near and intents.near contracts");
+    println!("  ✓ Deposited 0.01 BTC (1,000,000 satoshis) to DAO treasury via intents");
     println!("  ✓ Deployed bulk-payment contract");
-    println!("  ✓ Setup DAO treasury with 0.01 wNEAR (simulating 0.01 BTC)");
     println!("  ✓ Created bulk payment list for 100 BTC addresses");
     println!("  ✓ BTC addresses: bc1qtestaddress00 through bc1qtestaddress99");
-    println!("  ✓ Payment amount: 0.0001 wNEAR each (simulating 10,000 satoshis)");
-    println!("  ✓ Total amount: 0.01 wNEAR (simulating 1,000,000 satoshis)");
-    println!("  ✓ Verified approval FAILS with insufficient balance");
-    println!("  ✓ Verified approval SUCCEEDS with correct balance (ft_transfer_call)");
-    println!("  ✓ Treasury balance decreased by exactly 0.01 wNEAR");
+    println!("  ✓ Payment amount: 0.0001 BTC each (10,000 satoshis)");
+    println!("  ✓ Total amount: 0.01 BTC (1,000,000 satoshis)");
+    println!("  ✓ Verified approval FAILS with insufficient balance (0.005 BTC)");
+    println!("  ✓ Verified approval SUCCEEDS with correct balance (0.01 BTC)");
+    println!("  ✓ Treasury BTC balance decreased by exactly 0.01 BTC");
     println!("  ✓ All 100 BTC recipient addresses verified");
-    println!("  ✓ Contract holds approved tokens for payout");
+    println!("  ✓ Contract holds approved BTC tokens for payout via intents.near");
     println!("  ✓ Batch payout execution attempted\n");
-    println!("Production Notes:");
-    println!("  • With omft.near + intents.near, BTC addresses receive actual BTC");
-    println!("  • intents.near handles cross-chain withdrawal to bc1 addresses");
-    println!("  • This test demonstrates complete approval and accounting flow");
-    println!("  • Bulk-payment contract correctly tracks all payment metadata\n");
+    println!("Architecture:");
+    println!("  • omft.near: Multi-token contract for BTC token management");
+    println!("  • intents.near: Treasury contract managing cross-chain BTC deposits");
+    println!("  • bulk-payment: Uses nep141:btc token_id for intents withdrawals");
+    println!("  • Payments trigger ft_withdraw on intents.near for BTC transfers\n");
 
     Ok(())
 }
