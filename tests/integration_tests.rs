@@ -1258,7 +1258,6 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // ========================================================================
     println!("\nCreating bulk payment list for 100 BTC addresses...");
     
-    let mut btc_addresses = Vec::new();
     let mut payments = Vec::new();
     
     // Each recipient gets 0.0001 BTC equivalent (0.01 / 100)
@@ -1267,7 +1266,6 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     for i in 0..100 {
         // Generate deterministic BTC address (Bech32 SegWit format)
         let btc_address = format!("bc1qtestaddress{:02}", i);
-        btc_addresses.push(btc_address.clone());
         
         payments.push(json!({
             "recipient": btc_address,
@@ -1434,7 +1432,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     for batch in 0..num_batches {
         println!("Processing batch {} of {}...", batch + 1, num_batches);
         
-        let _batch_result = near_api::Contract(contract_id.clone())
+        let batch_result = near_api::Contract(contract_id.clone())
             .call_function(
                 "payout_batch",
                 json!({
@@ -1447,6 +1445,22 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             .with_signer(submitter_id.clone(), submitter_signer.clone())
             .send_to(&network_config)
             .await;
+        
+        // Batch calls may succeed (contract marks payments as processed)
+        // but individual transfers to BTC addresses will fail (not valid NEAR accounts)
+        // This is expected behavior - the contract still tracks payment status
+        match batch_result {
+            Ok(result) => {
+                if result.is_success() {
+                    println!("  ✓ Batch {} processed successfully", batch + 1);
+                } else {
+                    println!("  ! Batch {} completed with some failures (expected for BTC addresses)", batch + 1);
+                }
+            }
+            Err(e) => {
+                println!("  ! Batch {} error: {:?} (may be expected for BTC addresses)", batch + 1, e);
+            }
+        }
         
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
