@@ -1535,13 +1535,16 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         )?
         .transaction()
         .deposit(NearToken::from_yoctonear(1))
-        .gas(near_sdk::Gas::from_tgas(150))
+        .gas(near_sdk::Gas::from_tgas(300))
         .with_signer(dao_id.clone(), get_genesis_signer())
         .send_to(&network_config)
         .await?;
     
+    // Log transaction details before consuming
+    println!("✓ Payment list approved with mt_transfer_call");
+    println!("  Logs: {:?}", approval_result.logs());
+    
     approval_result.assert_success();
-    println!("✓ Payment list approved with ft_transfer_call");
 
     // Verify list is Approved
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
@@ -1551,10 +1554,6 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .await?
         .data;
     
-    // NOTE: The list will still be Pending because the bulk-payment contract
-    // needs to implement mt_on_transfer (NEP-245 callback) to handle
-    // multi-token transfers from intents.near
-    // TODO: Implement mt_on_transfer in src/lib.rs
     if list["status"] != "Approved" {
         println!("⚠ List status: {} (expected Approved)", list["status"]);
         println!("⚠ This is expected - the contract needs mt_on_transfer implementation");

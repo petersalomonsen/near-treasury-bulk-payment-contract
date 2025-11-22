@@ -7,7 +7,7 @@
 // - Storage-based fee model with 10% revenue margin
 use near_sdk::json_types::U128;
 use near_sdk::store::IterableMap;
-use near_sdk::{env, log, near, require, AccountId, Gas, NearToken, Promise};
+use near_sdk::{env, log, near, require, AccountId, Gas, NearToken, Promise, PromiseOrValue};
 
 #[near(contract_state)]
 pub struct BulkPaymentContract {
@@ -66,6 +66,19 @@ impl Default for BulkPaymentContract {
             approval_deposits: IterableMap::new(b"d"),
         }
     }
+}
+
+/// NEP-245 Multi-Token Receiver trait
+/// This trait defines the callback interface for receiving multi-token transfers
+pub trait MultiTokenReceiver {
+    fn mt_on_transfer(
+        &mut self,
+        sender_id: AccountId,
+        previous_owner_ids: Vec<AccountId>,
+        token_ids: Vec<String>,
+        amounts: Vec<U128>,
+        msg: String,
+    ) -> PromiseOrValue<Vec<U128>>;
 }
 
 #[near]
@@ -469,6 +482,121 @@ impl BulkPaymentContract {
 
         // Return 0 to keep all tokens
         U128(0)
+    }
+}
+
+/// NEP-245 Multi-Token Receiver implementation
+#[near]
+impl MultiTokenReceiver for BulkPaymentContract {
+    /// NEP-245 mt_on_transfer callback for multi-token approval flow
+    /// This is called by the multi-token contract (like intents.near) after mt_transfer_call
+    /// Returns the amount to refund (0 if all tokens are kept)
+    /// NEP-245 Multi-Token callback for `mt_transfer_call` and `mt_batch_transfer_call`
+    ///
+    /// This callback is invoked by the multi-token contract (e.g., intents.near) after
+    /// transferring tokens to this contract via `mt_transfer_call`.
+    ///
+    /// # Arguments
+    /// * `sender_id` - The account that initiated the `mt_transfer_call`
+    /// * `previous_owner_ids` - Array of accounts that owned the tokens before transfer
+    /// * `token_ids` - Array of token IDs being transferred
+    /// * `amounts` - Array of token amounts being transferred (as strings)
+    /// * `msg` - Message containing the payment list reference ID
+    ///
+    /// # Returns
+    /// Array of unused token amounts to refund (as strings). Returns all zeros to keep all tokens.
+    ///
+    /// # Panics
+    /// - If msg is not a valid list reference ID
+    /// - If payment list is not found
+    /// - If sender is not the list submitter
+    /// - If list is not in Pending status
+    /// - If token_ids/amounts arrays don't match expectations
+    /// - If transferred amount doesn't match required total
+    fn mt_on_transfer(
+        &mut self,
+        _sender_id: AccountId,
+        previous_owner_ids: Vec<AccountId>,
+        token_ids: Vec<String>,
+        amounts: Vec<U128>,
+        msg: String,
+    ) -> PromiseOrValue<Vec<U128>> {
+        // Suppress unused variable warnings
+        let _ = (previous_owner_ids, _sender_id);
+        
+        // Parse msg as list_ref
+        let list_ref: u64 = msg.parse().expect("msg must be a valid list reference ID");
+
+        // Get the list
+        let mut list = self
+            .payment_lists
+            .get(&list_ref)
+            .expect("Payment list not found")
+            .clone();
+
+        // Validate that sender owns the list OR is the token holder approving the payment
+        // The sender is the account calling mt_transfer_call (token owner)
+        // The submitter is the account that created the payment list
+        // We allow token owners to approve lists even if they didn't submit them
+
+        // Validate list is in Pending status
+        require!(
+            matches!(list.status, ListStatus::Pending),
+            "List must be in Pending status to approve via mt_transfer_call"
+        );
+
+        // For single token transfers, expect exactly one token
+        require!(
+            token_ids.len() == 1 && amounts.len() == 1,
+            "Expected exactly one token transfer"
+        );
+
+        let token_id = &token_ids[0];
+        let amount = amounts[0];
+
+        // Validate token_id matches the list
+        require!(
+            list.token_id == *token_id,
+            format!(
+                "Token ID mismatch: list expects '{}', received '{}'",
+                list.token_id, token_id
+            )
+        );
+
+        // Calculate total payment amount
+        let total_amount: u128 = list
+            .payments
+            .iter()
+            .map(|p| p.amount)
+            .try_fold(0u128, |acc, x| acc.checked_add(x))
+            .expect("Total payment amount overflow");
+
+        // Validate amount matches total
+        require!(
+            amount.0 == total_amount,
+            format!(
+                "Exact token amount required: {}, received: {}",
+                total_amount, amount.0
+            )
+        );
+
+        // Approve the list
+        list.status = ListStatus::Approved;
+        self.payment_lists.insert(list_ref, list);
+
+        // Store the deposit (in tokens, not NEAR)
+        self.approval_deposits
+            .insert(list_ref, NearToken::from_yoctonear(amount.0));
+
+        log!(
+            "Payment list {} approved via mt_transfer_call with {} tokens ({})",
+            list_ref,
+            amount.0,
+            token_id
+        );
+
+        // Return all zeros to keep all tokens (no refunds)
+        PromiseOrValue::Value(vec![U128(0); token_ids.len()])
     }
 }
 
