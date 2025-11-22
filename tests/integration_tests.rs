@@ -1631,9 +1631,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             .send_to(&network_config)
             .await;
         
-        // Batch calls may succeed (contract marks payments as processed)
-        // but individual transfers to BTC addresses will fail (not valid NEAR accounts)
-        // This is expected behavior - the contract still tracks payment status
+        // Track batch completion
         match batch_result {
             Ok(result) => {
                 if result.is_success() {

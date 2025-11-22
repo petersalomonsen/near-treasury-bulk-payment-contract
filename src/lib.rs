@@ -27,7 +27,7 @@ pub struct PaymentInput {
 #[derive(Clone)]
 pub struct PaymentRecord {
     pub recipient: AccountId,
-    pub amount: u128,
+    pub amount: U128,
     pub status: PaymentStatus,
 }
 
@@ -184,7 +184,7 @@ impl BulkPaymentContract {
             .into_iter()
             .map(|input| PaymentRecord {
                 recipient: input.recipient,
-                amount: input.amount.0,
+                amount: input.amount,
                 status: PaymentStatus::Pending,
             })
             .collect();
@@ -238,7 +238,7 @@ impl BulkPaymentContract {
         let total_amount: u128 = list
             .payments
             .iter()
-            .map(|p| p.amount)
+            .map(|p| p.amount.0)
             .try_fold(0u128, |acc, x| acc.checked_add(x))
             .expect("Total payment amount overflow");
 
@@ -297,7 +297,7 @@ impl BulkPaymentContract {
                     // Call ft_withdraw on intents.near
                     let args = format!(
                         r#"{{"token":"{}","receiver_id":"{}","amount":"{}"}}"#,
-                        token, payment.recipient, payment.amount
+                        token, payment.recipient, payment.amount.0
                     );
 
                     Promise::new("intents.near".parse().unwrap()).function_call(
@@ -309,7 +309,7 @@ impl BulkPaymentContract {
                 } else if list.token_id == "native" || list.token_id == "near" {
                     // Native NEAR transfer
                     Promise::new(payment.recipient.clone())
-                        .transfer(NearToken::from_yoctonear(payment.amount));
+                        .transfer(NearToken::from_yoctonear(payment.amount.0));
                 } else {
                     // NEP-141 fungible token transfer - token_id is the contract address
                     let token_account: AccountId = list
@@ -320,7 +320,7 @@ impl BulkPaymentContract {
                     // Call ft_transfer on the token contract
                     let args = format!(
                         r#"{{"receiver_id":"{}","amount":"{}"}}"#,
-                        payment.recipient, payment.amount
+                        payment.recipient, payment.amount.0
                     );
 
                     Promise::new(token_account).function_call(
@@ -446,14 +446,14 @@ impl BulkPaymentContract {
         // Validate list is in Pending status
         require!(
             matches!(list.status, ListStatus::Pending),
-            "List must be in Pending status to approve via ft_transfer_call"
+            "List must be in Pending status"
         );
 
         // Calculate total payment amount
         let total_amount: u128 = list
             .payments
             .iter()
-            .map(|p| p.amount)
+            .map(|p| p.amount.0)
             .try_fold(0u128, |acc, x| acc.checked_add(x))
             .expect("Total payment amount overflow");
 
@@ -567,7 +567,7 @@ impl MultiTokenReceiver for BulkPaymentContract {
         let total_amount: u128 = list
             .payments
             .iter()
-            .map(|p| p.amount)
+            .map(|p| p.amount.0)
             .try_fold(0u128, |acc, x| acc.checked_add(x))
             .expect("Total payment amount overflow");
 
@@ -910,8 +910,8 @@ mod tests {
         let list1 = contract.view_list(list_id1);
         let list2 = contract.view_list(list_id2);
 
-        assert_eq!(list1.payments[0].amount, 1_000_000_000_000_000_000_000_000);
-        assert_eq!(list2.payments[0].amount, 2_000_000_000_000_000_000_000_000);
+        assert_eq!(list1.payments[0].amount, U128(1_000_000_000_000_000_000_000_000));
+        assert_eq!(list2.payments[0].amount, U128(2_000_000_000_000_000_000_000_000));
     }
 
     // Note: Overflow protection tests are implicitly validated by the NEAR runtime environment.
