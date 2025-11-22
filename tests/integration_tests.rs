@@ -1546,6 +1546,10 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     
     approval_result.assert_success();
 
+    // Wait for cross-contract callback to complete (spans multiple blocks)
+    println!("  Waiting for mt_on_transfer callback to complete...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
     // Verify list is Approved
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
         .call_function("view_list", json!({ "list_ref": list_id }))?

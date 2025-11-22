@@ -515,14 +515,14 @@ impl MultiTokenReceiver for BulkPaymentContract {
     /// - If transferred amount doesn't match required total
     fn mt_on_transfer(
         &mut self,
-        _sender_id: AccountId,
+        sender_id: AccountId,
         previous_owner_ids: Vec<AccountId>,
         token_ids: Vec<String>,
         amounts: Vec<U128>,
         msg: String,
     ) -> PromiseOrValue<Vec<U128>> {
         // Suppress unused variable warnings
-        let _ = (previous_owner_ids, _sender_id);
+        let _ = (previous_owner_ids, sender_id);
         
         // Parse msg as list_ref
         let list_ref: u64 = msg.parse().expect("msg must be a valid list reference ID");
