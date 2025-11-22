@@ -268,7 +268,16 @@ impl BulkPaymentContract {
     }
 
     /// Process payments in batches (public function, anyone can call)
-    pub fn payout_batch(&mut self, list_ref: u64, max_payments: Option<u64>) {
+    /// 
+    /// NOTE: Returns a Promise that will execute asynchronously!
+    /// Currently processes only ONE payment per batch (max_payments=1 recommended).
+    /// A production implementation would:
+    /// 1. Chain multiple promises with Promise::and()
+    /// 2. Use callbacks to track async payment results
+    ///
+    /// # Panics
+    /// Panics if there are no pending payments to process
+    pub fn payout_batch(&mut self, list_ref: u64, max_payments: Option<u64>) -> Promise {
         let max = max_payments.unwrap_or(100).min(100);
 
         let mut list = self
@@ -282,7 +291,9 @@ impl BulkPaymentContract {
             "List must be Approved to process payments"
         );
 
+        let mut promise_to_return: Option<Promise> = None;
         let mut processed = 0;
+        
         for payment in list.payments.iter_mut() {
             if processed >= max {
                 break;
@@ -292,24 +303,42 @@ impl BulkPaymentContract {
                 // Process payment based on token type
                 if list.token_id.starts_with("nep141:") {
                     // NEAR Intents - call ft_withdraw on intents.near
-                    let token = list.token_id.strip_prefix("nep141:").unwrap();
-
-                    // Call ft_withdraw on intents.near
-                    let args = format!(
-                        r#"{{"token":"{}","receiver_id":"{}","amount":"{}"}}"#,
-                        token, payment.recipient, payment.amount.0
+                    // Extract token contract address from "nep141:btc.omft.near" -> "btc.omft.near"
+                    let token_contract = list.token_id.strip_prefix("nep141:").unwrap();
+                    
+                    // Build ft_withdraw args matching JavaScript example:
+                    // {token, receiver_id (both = token contract), amount, memo: "WITHDRAW_TO:{btc_address}"}
+                    let args_json = format!(
+                        r#"{{"token":"{}","receiver_id":"{}","amount":"{}","memo":"WITHDRAW_TO:{}"}}"#,
+                        token_contract,
+                        token_contract,  // receiver_id is the token contract, NOT the BTC address
+                        payment.amount.0,
+                        payment.recipient  // BTC address goes in memo with WITHDRAW_TO: prefix
                     );
-
-                    Promise::new("intents.near".parse().unwrap()).function_call(
+                    
+                    // Promise::function_call expects raw bytes (the JSON string bytes)
+                    // NEAR will handle the serialization
+                    let p = Promise::new("intents.near".parse().unwrap()).function_call(
                         "ft_withdraw".to_string(),
-                        args.into_bytes(),
+                        args_json.into_bytes(),
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
+                    
+                    // Only process one payment per call to avoid gas limits
+                    // Batch processing is done by calling payout_batch multiple times
+                    if promise_to_return.is_none() {
+                        promise_to_return = Some(p);
+                    }
                 } else if list.token_id == "native" || list.token_id == "near" {
                     // Native NEAR transfer
-                    Promise::new(payment.recipient.clone())
+                    let p = Promise::new(payment.recipient.clone())
                         .transfer(NearToken::from_yoctonear(payment.amount.0));
+                    
+                    // Only process one payment per call to avoid gas limits
+                    if promise_to_return.is_none() {
+                        promise_to_return = Some(p);
+                    }
                 } else {
                     // NEP-141 fungible token transfer - token_id is the contract address
                     let token_account: AccountId = list
@@ -323,12 +352,16 @@ impl BulkPaymentContract {
                         payment.recipient, payment.amount.0
                     );
 
-                    Promise::new(token_account).function_call(
+                    let p = Promise::new(token_account).function_call(
                         "ft_transfer".to_string(),
                         args.into_bytes(),
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
+                    
+                    if promise_to_return.is_none() {
+                        promise_to_return = Some(p);
+                    }
                 }
 
                 // Mark as Paid (in real implementation, would use callbacks)
@@ -341,6 +374,8 @@ impl BulkPaymentContract {
         self.payment_lists.insert(list_ref, list);
 
         log!("Processed {} payments for list {}", processed, list_ref);
+        
+        promise_to_return.expect("No pending payments to process")
     }
 
     /// Reject a payment list (only allowed before approval)

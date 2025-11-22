@@ -1611,11 +1611,13 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // - intents.near handles BTC transfer to bc1 addresses
     // - Contract tracks payment status
     
-    let batch_size = 10;
-    let num_batches = 10;
+    // Test different batch sizes to find optimal throughput
+    let batch_size = 5;
+    let num_batches = 20; // Process all 100 payments (20*5 = 100)
+    let mut batch_block_heights = Vec::new();
     
     for batch in 0..num_batches {
-        println!("Processing batch {} of {}...", batch + 1, num_batches);
+        println!("Processing batch {} of {} (batch_size={})...", batch + 1, num_batches, batch_size);
         
         let batch_result = near_api::Contract(contract_id.clone())
             .call_function(
@@ -1631,24 +1633,32 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             .send_to(&network_config)
             .await;
         
-        // Track batch completion
+        // Track batch completion and block height
         match batch_result {
             Ok(result) => {
+                // Always capture block hash, regardless of promise results
+                let outcome = result.outcome();
+                batch_block_heights.push(outcome.block_hash);
+                println!("    Block hash: {}", outcome.block_hash);
+                println!("    Gas used: {} TGas", outcome.gas_burnt.as_tgas());
+                println!("    Logs: {:?}", result.logs());
+                println!("    Is success: {}", result.is_success());
+                
                 if result.is_success() {
-                    println!("  ✓ Batch {} processed successfully", batch + 1);
+                    println!("  ✓ Batch {} processed successfully ({} payments)", batch + 1, batch_size);
                 } else {
-                    println!("  ! Batch {} completed with some failures (expected for BTC addresses)", batch + 1);
+                    println!("  ! Batch {} exceeded gas limit", batch + 1);
                 }
             }
             Err(e) => {
-                println!("  ! Batch {} error: {:?} (may be expected for BTC addresses)", batch + 1, e);
+                println!("  ! Batch {} error: {:?}", batch + 1, e);
             }
         }
         
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    
     println!("✓ All batches processed");
+    println!("  Note: mt_burn and ft_burn events are visible in the batch logs above");
 
     // ========================================================================
     // STEP 11: Verify payment records and BTC addresses
