@@ -268,7 +268,7 @@ impl BulkPaymentContract {
     }
 
     /// Process payments in batches (public function, anyone can call)
-    /// 
+    ///
     /// NOTE: Returns a Promise that will execute asynchronously!
     /// Currently processes only ONE payment per batch (max_payments=1 recommended).
     /// A production implementation would:
@@ -293,7 +293,7 @@ impl BulkPaymentContract {
 
         let mut promise_to_return: Option<Promise> = None;
         let mut processed = 0;
-        
+
         for payment in list.payments.iter_mut() {
             if processed >= max {
                 break;
@@ -305,17 +305,17 @@ impl BulkPaymentContract {
                     // NEAR Intents - call ft_withdraw on intents.near
                     // Extract token contract address from "nep141:btc.omft.near" -> "btc.omft.near"
                     let token_contract = list.token_id.strip_prefix("nep141:").unwrap();
-                    
+
                     // Build ft_withdraw args matching JavaScript example:
                     // {token, receiver_id (both = token contract), amount, memo: "WITHDRAW_TO:{btc_address}"}
                     let args_json = format!(
                         r#"{{"token":"{}","receiver_id":"{}","amount":"{}","memo":"WITHDRAW_TO:{}"}}"#,
                         token_contract,
-                        token_contract,  // receiver_id is the token contract, NOT the BTC address
+                        token_contract, // receiver_id is the token contract, NOT the BTC address
                         payment.amount.0,
-                        payment.recipient  // BTC address goes in memo with WITHDRAW_TO: prefix
+                        payment.recipient // BTC address goes in memo with WITHDRAW_TO: prefix
                     );
-                    
+
                     // Promise::function_call expects raw bytes (the JSON string bytes)
                     // NEAR will handle the serialization
                     let p = Promise::new("intents.near".parse().unwrap()).function_call(
@@ -324,7 +324,7 @@ impl BulkPaymentContract {
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
-                    
+
                     // Only process one payment per call to avoid gas limits
                     // Batch processing is done by calling payout_batch multiple times
                     if promise_to_return.is_none() {
@@ -334,7 +334,7 @@ impl BulkPaymentContract {
                     // Native NEAR transfer
                     let p = Promise::new(payment.recipient.clone())
                         .transfer(NearToken::from_yoctonear(payment.amount.0));
-                    
+
                     // Only process one payment per call to avoid gas limits
                     if promise_to_return.is_none() {
                         promise_to_return = Some(p);
@@ -358,7 +358,7 @@ impl BulkPaymentContract {
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
-                    
+
                     if promise_to_return.is_none() {
                         promise_to_return = Some(p);
                     }
@@ -374,7 +374,7 @@ impl BulkPaymentContract {
         self.payment_lists.insert(list_ref, list);
 
         log!("Processed {} payments for list {}", processed, list_ref);
-        
+
         promise_to_return.expect("No pending payments to process")
     }
 
@@ -558,7 +558,7 @@ impl MultiTokenReceiver for BulkPaymentContract {
     ) -> PromiseOrValue<Vec<U128>> {
         // Suppress unused variable warnings
         let _ = (previous_owner_ids, sender_id);
-        
+
         // Parse msg as list_ref
         let list_ref: u64 = msg.parse().expect("msg must be a valid list reference ID");
 
@@ -945,8 +945,14 @@ mod tests {
         let list1 = contract.view_list(list_id1);
         let list2 = contract.view_list(list_id2);
 
-        assert_eq!(list1.payments[0].amount, U128(1_000_000_000_000_000_000_000_000));
-        assert_eq!(list2.payments[0].amount, U128(2_000_000_000_000_000_000_000_000));
+        assert_eq!(
+            list1.payments[0].amount,
+            U128(1_000_000_000_000_000_000_000_000)
+        );
+        assert_eq!(
+            list2.payments[0].amount,
+            U128(2_000_000_000_000_000_000_000_000)
+        );
     }
 
     // Note: Overflow protection tests are implicitly validated by the NEAR runtime environment.
