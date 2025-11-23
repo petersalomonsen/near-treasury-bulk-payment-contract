@@ -22,24 +22,26 @@ This contract enables efficient batch payment processing on NEAR with support fo
 ### 2. Payment List Management
 - Submit lists with any number of payments
 - Approve lists with exact deposit matching total payment amount
-- Process payments in batches (max 100 per call)
-- Reject lists with automatic deposit refund
+- Process payments in batches (recommended: 5 for intents.near, up to 100 for native NEAR)
+- Reject lists before approval (no refunds - deposits managed by blockchain)
 
-### 3. NEAR Intents Integration
-- Supports NEAR Intents for fungible token transfers
-- Token format: `nep141:<token_contract>` (e.g., `nep141:wrap.near`)
-- Calls `ft_withdraw` on `intents.near` contract
-- Native NEAR transfers also supported with `token_id: "native"`
+### 3. Token Support
+- **Native NEAR**: Direct transfers with token_id: "native" or "near"
+- **NEP-141 Fungible Tokens**: Direct ft_transfer to token contract
+- **NEAR Intents**: Token format "nep141:<token_contract>" (e.g., "nep141:btc.omft.near")
+  - Calls ft_withdraw on intents.near for cross-chain withdrawals
+  - Supports BTC addresses as recipients (bc1q... format)
+  - Produces mt_burn and ft_burn events for verification
 
 ### 4. Payment Status Tracking
 - **Pending**: Payment not yet processed
 - **Paid**: Payment successfully completed
-- **Failed**: Payment failed with error message
+- **Failed**: Payment failed with error message (not currently used - marked as Paid)
 
 ### 5. List Status Management
 - **Pending**: List submitted but not approved
 - **Approved**: List approved and ready for processing
-- **Rejected**: List rejected, deposits refunded
+- **Rejected**: List rejected (only pending lists can be rejected)
 
 ## Contract Functions
 
@@ -60,19 +62,23 @@ Approves a payment list for processing.
 - Only submitter can approve
 - Requires exact deposit matching total payment amount
 - Changes status to Approved
+- No approval deposit tracking (deposits managed by blockchain balance)
 
 ### payout_batch(list_ref: u64, max_payments: Option<u64>)
-Processes payments in batches (public function).
-- Processes up to 100 payments per call (configurable)
-- For NEAR Intents: calls ft_withdraw on intents.near
+Processes payments in batches (public function - anyone can call).
+- Default/max: 100 payments per call (configurable, recommend 5 for intents.near)
+- For NEAR Intents (nep141:* tokens): calls ft_withdraw on intents.near
 - For native NEAR: direct transfer
-- Updates payment status to Paid or Failed
+- For NEP-141 tokens: calls ft_transfer on token contract
+- Updates payment status to Paid
+- Returns Promise that executes asynchronously
 
 ### reject_list(list_ref: u64)
 Rejects a payment list.
 - Only submitter can reject
-- Refunds approval deposit if any
+- Only pending lists can be rejected
 - Changes status to Rejected
+- No refunds (contract doesn't hold approval deposits)
 
 ### view_list(list_ref: u64) -> PaymentList
 Views payment list details including all payment statuses.
@@ -105,10 +111,22 @@ cargo build --target wasm32-unknown-unknown --release
 # Run unit tests (no external dependencies)
 cargo test --lib
 
-# Run all tests including integration tests (requires internet access)
+# Run all tests including integration tests
+# Integration tests require:
+# - System dependencies: sudo apt-get install libudev-dev pkg-config
+# - Network access to mainnet (for importing contracts)
 # See tests/README.md for setup instructions
 cargo test
+
+# Run specific integration test
+cargo test --test integration_tests test_bulk_btc_intents_payment -- --nocapture
 ```
+
+**Test Coverage**:
+- 11 unit tests covering all core functionality
+- 9 integration tests with end-to-end workflows
+- All tests use random payment amounts to verify correct routing
+- Comprehensive burn event validation for BTC payments (200 events)
 
 ## Usage Example
 
@@ -143,10 +161,11 @@ let list = contract.view_list(list_id);
 ## Security Features
 
 - Exact deposit validation (prevents overpayment/underpayment)
-- Authorization checks (only submitter can approve/reject/retry)
-- Safe arithmetic (no overflow risks)
-- Failed payment tracking and retry mechanism
-- Cross-contract call error handling
+- Authorization checks (only submitter can approve/reject/retry their own lists)
+- Safe arithmetic with overflow checks (checked_add, checked_mul)
+- Payment status tracking (all marked as Paid after processing)
+- Cross-contract call handling (returns Promise for async execution)
+- No refund mechanism (deposits managed by blockchain balance, not contract state)
 
 ## Revenue Model
 

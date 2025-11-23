@@ -19,20 +19,26 @@ This is a NEAR smart contract for bulk payment processing, part of the NEAR Trea
 
 The contract consists of:
 
-- **BulkPaymentContract**: Main contract state managing payment lists and storage credits
+- **BulkPaymentContract**: Main contract state with 3 fields:
+  - `payment_lists`: IterableMap<u64, PaymentList> - Stores all payment lists
+  - `storage_credits`: IterableMap<AccountId, NearToken> - Tracks storage credits per user
+  - `next_list_id`: u64 - Auto-incrementing list ID counter
 - **PaymentList**: Structure for organizing multiple payments with approval workflow
 - **PaymentRecord**: Individual payment records with status tracking
 - **PaymentStatus**: Enum for tracking payment states (Pending, Paid, Failed)
 - **ListStatus**: Enum for tracking list approval states (Pending, Approved, Rejected)
+- **MultiTokenReceiver**: NEP-245 trait implementation for mt_on_transfer callback
 
-## Key Features (To Be Implemented)
+## Key Features (Fully Implemented)
 
-- Storage credit management (`buy_storage`)
-- Payment list submission (`submit_list`)
-- List approval workflow (`approve_list`, `reject_list`)
-- Batch payment execution (`payout_batch`)
+- Storage credit management with 10% revenue markup (`buy_storage`)
+- Payment list submission with credit deduction (`submit_list`)
+- List approval via direct deposit or ft_on_transfer/mt_on_transfer callbacks (`approve_list`)
+- Batch payment execution supporting native NEAR, NEP-141 tokens, and NEAR Intents (`payout_batch`)
 - Failed payment retry mechanism (`retry_failed`)
-- Payment list viewing (`view_list`)
+- Payment list viewing (`view_list`, `view_storage_credits`)
+- List rejection for pending lists only (`reject_list`)
+- No approval deposit refunds (deposits managed by blockchain balance)
 
 ## Development Commands
 
@@ -98,18 +104,25 @@ cargo fmt
 
 ## Testing Guidelines
 
-- Write unit tests in the `tests` module within `lib.rs`
+- Write unit tests in the `tests` module within `lib.rs` (11 tests covering all features)
+- Write integration tests in `tests/integration_tests.rs` (9 comprehensive end-to-end tests)
 - Use `near-sdk` unit-testing features for contract testing
-- Test edge cases, especially around payment status transitions
+- Use `near-sandbox` and `near-api` for integration testing
+- Test with random payment amounts to verify correct routing (not fixed amounts)
+- For BTC intents tests: Verify exact burn event counts (100 mt_burn + 100 ft_burn = 200 total)
+- For BTC intents tests: Validate per-event content (amount and recipient in each burn event)
+- For NEAR/FT tests: Verify recipient balances directly (not burn events)
 - Mock external calls and test error conditions
 - Verify storage operations and gas usage
+- Test edge cases around payment status transitions and authorization
 
 ## When Adding New Features
 
-1. Follow the existing pattern for state management using UnorderedMap
+1. Follow the existing pattern for state management using IterableMap (not UnorderedMap)
 2. Add appropriate serialization macros (`#[near(serializers = [json, borsh])]`)
 3. Implement view methods (read-only) separately from state-changing methods
 4. Document method parameters and return values
-5. Handle all error cases explicitly
-6. Add corresponding unit tests
-7. Update this documentation if adding significant functionality
+5. Handle all error cases explicitly with require! and proper error messages
+6. Add corresponding unit tests AND integration tests
+7. For payment tests: Use random amounts per recipient to verify correct routing
+8. Update README.md, tests/README.md, and this file if adding significant functionality

@@ -1123,12 +1123,13 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
 /// This test demonstrates the full workflow for bulk payments to BTC addresses:
 /// 1. Setup DAO treasury with BTC tokens via omft.near and intents.near
 /// 2. Deploy and initialize bulk-payment contract  
-/// 3. Create bulk payment request for 100 BTC addresses (0.0001 BTC each = 0.01 BTC total)
+/// 3. Create bulk payment request for 100 BTC addresses with random amounts (5,000-14,900 satoshis each)
 /// 4. Test approval with insufficient balance (should fail)
-/// 5. Test approval with correct balance using ft_transfer_call (should succeed)
-/// 6. Execute batch payouts
-/// 7. Verify recipient BTC addresses are correctly recorded
-/// 8. Verify treasury accounting (balance decreases correctly)
+/// 5. Test approval with correct balance using mt_transfer_call (should succeed)
+/// 6. Execute batch payouts (20 batches of 5 payments each)
+/// 7. Verify exactly 200 burn events (100 mt_burn + 100 ft_burn) with correct amounts
+/// 8. Verify per-batch balance tracking and per-event content validation
+/// 9. Verify all recipient BTC addresses and amounts are correctly recorded
 ///
 /// # IMPORTANT: Required Setup for This Test
 ///
@@ -1155,9 +1156,11 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
 ///
 /// # Architecture Notes
 /// - omft.near: Multi-token (MT) standard contract for BTC (similar to ERC-1155)
-/// - intents.near: Treasury management for cross-chain assets
+/// - intents.near: Treasury management for cross-chain assets with mt_transfer_call
 /// - BTC addresses: Use deterministic format bc1qtestaddress{XX} for testing
-/// - Token amounts: BTC uses 8 decimals (satoshis), so 0.0001 BTC = 10,000 satoshis
+/// - Token amounts: Random amounts 5,000-14,900 satoshis (~995,000 satoshis total)
+/// - Burn events: Exactly 200 events validated (100 mt_burn + 100 ft_burn) with per-event content checks
+/// - Batch processing: 5 payments per batch (optimal for gas), 20 batches total
 ///
 /// This test uses async/await with tokio and sandbox flows, matching existing test patterns.
 #[tokio::test]

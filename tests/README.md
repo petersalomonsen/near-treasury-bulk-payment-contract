@@ -44,12 +44,15 @@ The integration tests cover:
 
 1. **Storage Purchase Test**: Verifies storage cost calculation with 10% markup
 2. **Submit and Approve List Test**: Tests list submission and approval flow
-3. **Batch Processing Test**: Tests processing 250 payments in batches of 100
-4. **Failed Payment Retry Test**: Tests retry mechanism for failed payments
-5. **Reject List with Refund Test**: Tests list rejection and deposit refund
-6. **Revenue Generation Test**: Verifies contract generates profit from storage markup
-7. **Exact Deposit Validation Test**: Tests deposit amount validation
-8. **Unauthorized Operations Test**: Tests authorization checks
+3. **Batch Processing Test**: Tests 250 NEAR payments with random amounts (0.5-2.5 NEAR) and per-recipient validation
+4. **Fungible Token Payment Test**: Tests 100 wNEAR payments with random amounts (0.5-1.5 wNEAR) via wrap.near using ft_transfer_call
+5. **Bulk BTC Intents Payment Test**: Tests 100 BTC payments with random amounts (5,000-14,900 satoshis) via omft.near and intents.near with exact burn event validation (200 events total)
+6. **Reject List Test**: Tests list rejection before approval
+7. **Revenue Generation Test**: Verifies contract generates profit from 10% storage markup
+8. **Exact Deposit Validation Test**: Tests exact deposit amount requirement
+9. **Unauthorized Operations Test**: Tests that only submitters can approve/reject their lists
+
+All payment tests use random amounts per recipient to verify correct payment routing and detect any amount/recipient mismatches.
 
 ## Unit Tests
 
