@@ -1314,66 +1314,9 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     println!("✓ intents.near registered with BTC token storage");
 
     // ========================================================================
-    // STEP 3: Deposit BTC tokens to DAO treasury via intents contract
+    // STEP 3: Create DAO account (deposit will happen after calculating payment amounts)
     // ========================================================================
-    println!("\nDepositing 0.01 BTC to DAO treasury via intents...");
-
     let dao_id: AccountId = "dao.near".parse().unwrap();
-
-    // BTC uses 8 decimals (satoshis)
-    // 0.01 BTC = 1,000,000 satoshis
-    let btc_amount = 1_000_000u128; // 0.01 BTC in satoshis
-
-    // Use ft_deposit on omft.near to deposit BTC tokens to intents for the DAO
-    // This simulates a bridge deposit from Bitcoin network
-    // Based on: https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/tests/intents/payment-request-ui.spec.js#L258-L278
-    near_api::Contract(omft_id.clone())
-        .call_function(
-            "ft_deposit",
-            json!({
-                "owner_id": intents_id.to_string(),
-                "token": "btc",
-                "amount": btc_amount.to_string(),
-                "msg": serde_json::to_string(&json!({ "receiver_id": dao_id.to_string() }))?,
-                "memo": format!("BRIDGED_FROM:{}", serde_json::to_string(&json!({
-                    "networkType": "btc",
-                    "chainId": "1",
-                    "txHash": "0xc6b7ecd5c7517a8f56ac7ec9befed7d26a459fc97c7d5cd7598d4e19b5a806b7"
-                }))?)
-            }),
-        )?
-        .transaction()
-        .gas(near_sdk::Gas::from_tgas(300))
-        .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
-        .with_signer(omft_id.clone(), get_genesis_signer())
-        .send_to(&network_config)
-        .await?
-        .assert_success();
-
-    println!("✓ DAO treasury holds 0.01 BTC (1,000,000 satoshis) via intents.near");
-
-    // Verify initial treasury balance in intents contract
-    // The DAO should have BTC balance in intents.near
-    // intents.near uses mt_balance_of (multi-token) instead of ft_balance_of
-    // Based on: https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/tests/intents/payment-request-ui.spec.js#L719-L727
-    let initial_treasury_balance: String = near_api::Contract(intents_id.clone())
-        .call_function(
-            "mt_balance_of",
-            json!({
-                "account_id": dao_id.to_string(),
-                "token_id": "nep141:btc.omft.near"
-            }),
-        )?
-        .read_only()
-        .fetch_from(&network_config)
-        .await?
-        .data;
-
-    let initial_balance_num: u128 = initial_treasury_balance.parse()?;
-    println!(
-        "✓ Initial treasury BTC balance: {} satoshis (0.01 BTC)",
-        initial_balance_num
-    );
 
     // ========================================================================
     // STEP 4: Deploy and initialize bulk-payment contract
@@ -1435,23 +1378,89 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     println!("\nCreating bulk payment list for 100 BTC addresses...");
 
     let mut payments = Vec::new();
+    let mut payment_amounts = Vec::new();
 
-    // Each recipient gets 0.0001 BTC = 10,000 satoshis (BTC has 8 decimals)
-    // Total: 100 * 10,000 = 1,000,000 satoshis = 0.01 BTC
-    let payment_amount = 10_000u128; // 0.0001 BTC in satoshis
-
+    // Generate random payment amounts for each recipient (between 5,000 and 15,000 satoshis)
+    // This tests that correct amounts are paid to correct recipients
+    // Total will be around 1,000,000 satoshis (0.01 BTC)
+    let mut total_amount = 0u128;
     for i in 0..100 {
+        // Deterministic "random" amount based on index (5000 + (i * 100) % 10000)
+        // This gives us amounts between 5,000 and 14,900 satoshis
+        let amount = 5_000u128 + ((i * 100) % 10_000);
+        payment_amounts.push(amount);
+        total_amount += amount;
+
         // Generate deterministic BTC address (Bech32 SegWit format)
         let btc_address = format!("bc1qtestaddress{:02}", i);
 
         payments.push(json!({
             "recipient": btc_address,
-            "amount": payment_amount.to_string()
+            "amount": amount.to_string()
         }));
     }
 
     println!("✓ Generated 100 BTC addresses: bc1qtestaddress00 to bc1qtestaddress99");
-    println!("✓ Each address will receive 0.0001 BTC (10,000 satoshis)");
+    println!("✓ Payment amounts range from 5,000 to 14,900 satoshis (random per address)");
+    println!("✓ Total payment amount: {} satoshis", total_amount);
+
+    // ========================================================================
+    // STEP 6a: Deposit exact BTC amount to DAO treasury via intents
+    // ========================================================================
+    println!("\nDepositing {} satoshis to DAO treasury via intents...", total_amount);
+
+    // Use ft_deposit on omft.near to deposit BTC tokens to intents for the DAO
+    // This simulates a bridge deposit from Bitcoin network
+    near_api::Contract(omft_id.clone())
+        .call_function(
+            "ft_deposit",
+            json!({
+                "owner_id": intents_id.to_string(),
+                "token": "btc",
+                "amount": total_amount.to_string(),
+                "msg": serde_json::to_string(&json!({ "receiver_id": dao_id.to_string() }))?,
+                "memo": format!("BRIDGED_FROM:{}", serde_json::to_string(&json!({
+                    "networkType": "btc",
+                    "chainId": "1",
+                    "txHash": "0xc6b7ecd5c7517a8f56ac7ec9befed7d26a459fc97c7d5cd7598d4e19b5a806b7"
+                }))?)
+            }),
+        )?
+        .transaction()
+        .gas(near_sdk::Gas::from_tgas(300))
+        .deposit(NearToken::from_yoctonear(1_250_000_000_000_000_000_000))
+        .with_signer(omft_id.clone(), get_genesis_signer())
+        .send_to(&network_config)
+        .await?
+        .assert_success();
+
+    println!("✓ DAO treasury holds {} satoshis via intents.near", total_amount);
+
+    // Verify initial treasury balance
+    let initial_treasury_balance: String = near_api::Contract(intents_id.clone())
+        .call_function(
+            "mt_balance_of",
+            json!({
+                "account_id": dao_id.to_string(),
+                "token_id": "nep141:btc.omft.near"
+            }),
+        )?
+        .read_only()
+        .fetch_from(&network_config)
+        .await?
+        .data;
+
+    let initial_balance_num: u128 = initial_treasury_balance.parse()?;
+    assert_eq!(
+        initial_balance_num, total_amount,
+        "Initial treasury balance must equal total payment amount"
+    );
+    println!("✓ Initial treasury BTC balance: {} satoshis", initial_balance_num);
+
+    // ========================================================================
+    // STEP 6b: Submit the payment list
+    // ========================================================================
+    println!("\nSubmitting payment list...");
 
     // Submit the payment list
     // Token ID format for intents: full multi-token ID "nep141:btc.omft.near"
@@ -1531,8 +1540,8 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // ========================================================================
     println!("\n--- TEST: Approval with correct balance ---");
 
-    // Correct amount: 0.01 BTC = 1,000,000 satoshis
-    let correct_amount = btc_amount; // 1,000,000 satoshis
+    // Use the actual total amount from all payments
+    let correct_amount = total_amount;
 
     let approval_result = near_api::Contract(intents_id.clone())
         .call_function(
@@ -1627,17 +1636,11 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // Test different batch sizes to find optimal throughput
     let batch_size = 5;
     let num_batches = 20; // Process all 100 payments (20*5 = 100)
-    let mut batch_block_heights = Vec::new();
+    let mut total_burn_events = 0;
+    let mut expected_remaining_balance = correct_amount;
 
     for batch in 0..num_batches {
-        println!(
-            "Processing batch {} of {} (batch_size={})...",
-            batch + 1,
-            num_batches,
-            batch_size
-        );
-
-        let batch_result = near_api::Contract(contract_id.clone())
+        let result = near_api::Contract(contract_id.clone())
             .call_function(
                 "payout_batch",
                 json!({
@@ -1649,38 +1652,133 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             .gas(near_sdk::Gas::from_tgas(300))
             .with_signer(submitter_id.clone(), submitter_signer.clone())
             .send_to(&network_config)
-            .await;
+            .await?;
 
-        // Track batch completion and block height
-        match batch_result {
-            Ok(result) => {
-                // Always capture block hash, regardless of promise results
-                let outcome = result.outcome();
-                batch_block_heights.push(outcome.block_hash);
-                println!("    Block hash: {}", outcome.block_hash);
-                println!("    Gas used: {} TGas", outcome.gas_burnt.as_tgas());
-                println!("    Logs: {:?}", result.logs());
-                println!("    Is success: {}", result.is_success());
+        // Hard expectation: batch must succeed
+        assert!(
+            result.is_success(),
+            "Batch {} must succeed",
+            batch + 1
+        );
 
-                if result.is_success() {
-                    println!(
-                        "  ✓ Batch {} processed successfully ({} payments)",
-                        batch + 1,
-                        batch_size
-                    );
-                } else {
-                    println!("  ! Batch {} exceeded gas limit", batch + 1);
-                }
+        // Hard expectation: must have exactly one mt_burn and one ft_burn event per payment
+        let logs = result.logs();
+        
+        // Parse and verify burn events
+        let mut mt_burn_events = Vec::new();
+        let mut ft_burn_events = Vec::new();
+        
+        for log in logs.iter() {
+            if log.contains("mt_burn") {
+                println!("  mt_burn: {}", log);
+                mt_burn_events.push(log.to_string());
+            } else if log.contains("ft_burn") {
+                println!("  ft_burn: {}", log);
+                ft_burn_events.push(log.to_string());
             }
-            Err(e) => {
-                println!("  ! Batch {} error: {:?}", batch + 1, e);
+        }
+        
+        // Hard expectation: exactly batch_size mt_burn events
+        assert_eq!(
+            mt_burn_events.len(), batch_size as usize,
+            "Batch {} must have exactly {} mt_burn events (got: {})",
+            batch + 1, batch_size, mt_burn_events.len()
+        );
+        
+        // Hard expectation: exactly batch_size ft_burn events
+        assert_eq!(
+            ft_burn_events.len(), batch_size as usize,
+            "Batch {} must have exactly {} ft_burn events (got: {})",
+            batch + 1, batch_size, ft_burn_events.len()
+        );
+        
+        // Verify each burn event contains correct amount
+        // Note: Events may come in any order within a batch
+        let batch_start_idx = batch as usize * batch_size as usize;
+        let mut batch_amounts = Vec::new();
+        let mut batch_recipients = Vec::new();
+        
+        for offset in 0..batch_size as usize {
+            let payment_idx = batch_start_idx + offset;
+            if payment_idx >= payment_amounts.len() {
+                break;
             }
+            batch_amounts.push(payment_amounts[payment_idx].to_string());
+            batch_recipients.push(format!("bc1qtestaddress{:02}", payment_idx));
+        }
+        
+        // Check all expected amounts are present in mt_burn events
+        for expected_amount in batch_amounts.iter() {
+            let mt_burn_found = mt_burn_events.iter().any(|log| {
+                log.contains(expected_amount)
+            });
+            assert!(
+                mt_burn_found,
+                "Batch {} must have mt_burn event with amount {} (events: {:?})",
+                batch + 1, expected_amount, mt_burn_events
+            );
+        }
+        
+        // Check all expected amounts and recipients are present in ft_burn events
+        for (expected_amount, expected_recipient) in batch_amounts.iter().zip(batch_recipients.iter()) {
+            let ft_burn_found = ft_burn_events.iter().any(|log| {
+                log.contains(expected_amount) && log.contains(expected_recipient)
+            });
+            assert!(
+                ft_burn_found,
+                "Batch {} must have ft_burn event with amount {} and recipient {} (events: {:?})",
+                batch + 1, expected_amount, expected_recipient, ft_burn_events
+            );
+        }
+        
+        total_burn_events += mt_burn_events.len() + ft_burn_events.len();
+
+        // Hard expectation: contract balance must decrease by exact batch amount
+        let batch_start_idx = batch as usize * batch_size as usize;
+        let batch_end_idx = std::cmp::min(batch_start_idx + batch_size as usize, payment_amounts.len());
+        let batch_amount: u128 = payment_amounts[batch_start_idx..batch_end_idx].iter().sum();
+        expected_remaining_balance -= batch_amount;
+
+        let current_balance: String = near_api::Contract(intents_id.clone())
+            .call_function(
+                "mt_balance_of",
+                json!({
+                    "account_id": contract_id.to_string(),
+                    "token_id": "nep141:btc.omft.near"
+                }),
+            )?
+            .read_only()
+            .fetch_from(&network_config)
+            .await?
+            .data;
+
+        let current_balance_num: u128 = current_balance.parse()?;
+        assert_eq!(
+            current_balance_num, expected_remaining_balance,
+            "Batch {} must decrease contract balance by exactly {} satoshis (expected remaining: {}, got: {})",
+            batch + 1, batch_amount, expected_remaining_balance, current_balance_num
+        );
+
+        // Print progress every 5 batches
+        if (batch + 1) % 5 == 0 {
+            println!(
+                "✓ Processed {} of {} batches - Contract balance: {} satoshis (paid {} satoshis so far)",
+                batch + 1,
+                num_batches,
+                current_balance_num,
+                total_amount - expected_remaining_balance
+            );
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    println!("✓ All batches processed");
-    println!("  Note: mt_burn and ft_burn events are visible in the batch logs above");
+    
+    // Hard expectation: must have exactly 200 burn events (100 mt_burn + 100 ft_burn)
+    assert_eq!(
+        total_burn_events, 200,
+        "Must have exactly 200 burn events (100 mt_burn + 100 ft_burn), got: {}",
+        total_burn_events
+    );
 
     // ========================================================================
     // STEP 11: Verify payment records and BTC addresses
@@ -1695,10 +1793,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .data;
 
     let payments_array = list["payments"].as_array().unwrap();
-    assert_eq!(payments_array.len(), 100, "Should have 100 payments");
-
-    let mut paid_count = 0;
-    let mut failed_count = 0;
+    assert_eq!(payments_array.len(), 100, "Must have exactly 100 payments");
 
     for (i, payment) in payments_array.iter().enumerate() {
         let expected_address = format!("bc1qtestaddress{:02}", i);
@@ -1706,39 +1801,28 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
 
         assert_eq!(
             actual_recipient, expected_address,
-            "Payment {} should have correct BTC address",
+            "Payment {} must have correct BTC address",
             i
         );
 
-        // Check status (will be Paid or Failed)
-        let status = payment["status"]
-            .as_str()
-            .or_else(|| payment["status"].as_object().map(|_| "Failed"))
-            .unwrap_or("Unknown");
+        // Hard expectation: all payments must be Paid
+        let status = payment["status"].as_str().unwrap();
+        assert_eq!(
+            status, "Paid",
+            "Payment {} must be marked as Paid, got: {}",
+            i, status
+        );
 
-        if status == "Paid" {
-            paid_count += 1;
-        } else {
-            failed_count += 1;
-        }
-
-        // Verify amount
-        let amount = payment["amount"].as_str().unwrap_or("0");
+        // Hard expectation: correct amount (must match the random amount generated for this payment)
+        let amount = payment["amount"].as_str().unwrap();
+        let expected_amount = payment_amounts[i];
         assert_eq!(
             amount,
-            payment_amount.to_string(),
-            "Payment {} should have correct amount",
-            i
+            expected_amount.to_string(),
+            "Payment {} must have correct amount (expected: {}, got: {})",
+            i, expected_amount, amount
         );
     }
-
-    println!("✓ All 100 BTC addresses verified (bc1qtestaddress00-99)");
-    println!(
-        "✓ Payment statuses: {} Paid, {} Failed",
-        paid_count, failed_count
-    );
-    println!("  (Failures expected: BTC addresses aren't valid NEAR accounts)");
-    println!("  (In production, intents.near handles actual BTC withdrawals to these addresses)");
 
     // ========================================================================
     // STEP 12: Verify contract holds the approval tokens
@@ -1760,35 +1844,15 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .data;
 
     let contract_balance_num: u128 = contract_balance.parse()?;
-    println!("✓ Contract BTC balance: {} satoshis", contract_balance_num);
-    println!("✓ Contract holds approved BTC tokens for payout");
+    
+    // Hard expectation: contract must have 0 balance after all payouts
+    assert_eq!(
+        contract_balance_num, 0,
+        "Contract must have 0 BTC balance after all payouts (got: {} satoshis)",
+        contract_balance_num
+    );
 
-    // ========================================================================
-    // FINAL SUMMARY
-    // ========================================================================
-    println!("\n{}", "=".repeat(70));
-    println!("✅ TEST COMPLETED SUCCESSFULLY!");
-    println!("{}", "=".repeat(70));
-    println!();
-    println!("Summary:");
-    println!("  ✓ Deployed omft.near and intents.near contracts");
-    println!("  ✓ Deposited 0.01 BTC (1,000,000 satoshis) to DAO treasury via intents");
-    println!("  ✓ Deployed bulk-payment contract");
-    println!("  ✓ Created bulk payment list for 100 BTC addresses");
-    println!("  ✓ BTC addresses: bc1qtestaddress00 through bc1qtestaddress99");
-    println!("  ✓ Payment amount: 0.0001 BTC each (10,000 satoshis)");
-    println!("  ✓ Total amount: 0.01 BTC (1,000,000 satoshis)");
-    println!("  ✓ Verified approval FAILS with insufficient balance (0.005 BTC)");
-    println!("  ✓ Verified approval SUCCEEDS with correct balance (0.01 BTC)");
-    println!("  ✓ Treasury BTC balance decreased by exactly 0.01 BTC");
-    println!("  ✓ All 100 BTC recipient addresses verified");
-    println!("  ✓ Contract holds approved BTC tokens for payout via intents.near");
-    println!("  ✓ Batch payout execution attempted\n");
-    println!("Architecture:");
-    println!("  • omft.near: Multi-token contract for BTC token management");
-    println!("  • intents.near: Treasury contract managing cross-chain BTC deposits");
-    println!("  • bulk-payment: Uses nep141:btc token_id for intents withdrawals");
-    println!("  • Payments trigger ft_withdraw on intents.near for BTC transfers\n");
+
 
     Ok(())
 }
