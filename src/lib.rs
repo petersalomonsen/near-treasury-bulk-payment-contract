@@ -14,7 +14,6 @@ pub struct BulkPaymentContract {
     payment_lists: IterableMap<u64, PaymentList>,
     storage_credits: IterableMap<AccountId, NearToken>,
     next_list_id: u64,
-    approval_deposits: IterableMap<u64, NearToken>,
 }
 
 #[near(serializers = [json])]
@@ -63,7 +62,6 @@ impl Default for BulkPaymentContract {
             payment_lists: IterableMap::new(b"p"),
             storage_credits: IterableMap::new(b"s"),
             next_list_id: 0,
-            approval_deposits: IterableMap::new(b"d"),
         }
     }
 }
@@ -256,9 +254,6 @@ impl BulkPaymentContract {
         // Update list status
         list.status = ListStatus::Approved;
         self.payment_lists.insert(list_ref, list);
-
-        // Store approval deposit for potential refund
-        self.approval_deposits.insert(list_ref, attached);
 
         log!(
             "Payment list {} approved with deposit {}",
@@ -505,10 +500,6 @@ impl BulkPaymentContract {
         list.status = ListStatus::Approved;
         self.payment_lists.insert(list_ref, list);
 
-        // Store the deposit (in tokens, not NEAR)
-        self.approval_deposits
-            .insert(list_ref, NearToken::from_yoctonear(amount.0));
-
         log!(
             "Payment list {} approved via ft_transfer_call with {} tokens",
             list_ref,
@@ -618,10 +609,6 @@ impl MultiTokenReceiver for BulkPaymentContract {
         // Approve the list
         list.status = ListStatus::Approved;
         self.payment_lists.insert(list_ref, list);
-
-        // Store the deposit (in tokens, not NEAR)
-        self.approval_deposits
-            .insert(list_ref, NearToken::from_yoctonear(amount.0));
 
         log!(
             "Payment list {} approved via mt_transfer_call with {} tokens ({})",
