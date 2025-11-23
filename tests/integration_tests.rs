@@ -385,16 +385,17 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
     let mut payments = Vec::new();
     let mut payment_amounts = Vec::new();
     let mut total_amount_yocto = 0u128;
-    
+
     for (i, recipient) in recipients.iter().enumerate() {
         // Generate amount: 0.5 NEAR + (i * 0.01 NEAR) % 2 NEAR
         // Results in amounts between 0.5 and 2.49 NEAR
         let base_amount = 500_000_000_000_000_000_000_000u128; // 0.5 NEAR
-        let variable_amount = (i as u128 * 10_000_000_000_000_000_000_000) % 2_000_000_000_000_000_000_000_000; // 0-2 NEAR
+        let variable_amount =
+            (i as u128 * 10_000_000_000_000_000_000_000) % 2_000_000_000_000_000_000_000_000; // 0-2 NEAR
         let amount = base_amount + variable_amount;
         payment_amounts.push(amount);
         total_amount_yocto += amount;
-        
+
         payments.push(json!({
             "recipient": recipient.to_string(),
             "amount": amount.to_string()
@@ -511,7 +512,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         // Each recipient started with 1 NEAR and should have received their specific payment amount
         let initial_balance = 1_000_000_000_000_000_000_000_000u128; // 1 NEAR
         let expected_balance = initial_balance + payment_amounts[i];
-        
+
         assert_eq!(
             balance.as_yoctonear(),
             expected_balance,
@@ -559,14 +560,16 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
             "Payment {} should be marked as Paid",
             i
         );
-        
+
         // Verify correct amount was recorded
         let recorded_amount = payment["amount"].as_str().unwrap();
         assert_eq!(
             recorded_amount,
             payment_amounts[i].to_string(),
             "Payment {} should have correct amount (expected: {}, got: {})",
-            i, payment_amounts[i], recorded_amount
+            i,
+            payment_amounts[i],
+            recorded_amount
         );
     }
 
@@ -671,16 +674,17 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
     let mut payments = Vec::new();
     let mut payment_amounts = Vec::new();
     let mut total_amount_yocto = 0u128;
-    
+
     for (i, recipient) in recipients.iter().enumerate() {
         // Generate amount: 0.5 wNEAR + (i * 0.01 wNEAR) % 1 wNEAR
         // Results in amounts between 0.5 and 1.49 wNEAR
         let base_amount = 500_000_000_000_000_000_000_000u128; // 0.5 wNEAR
-        let variable_amount = (i as u128 * 10_000_000_000_000_000_000_000) % 1_000_000_000_000_000_000_000_000; // 0-1 wNEAR
+        let variable_amount =
+            (i as u128 * 10_000_000_000_000_000_000_000) % 1_000_000_000_000_000_000_000_000; // 0-1 wNEAR
         let amount = base_amount + variable_amount;
         payment_amounts.push(amount);
         total_amount_yocto += amount;
-        
+
         payments.push(json!({
             "recipient": recipient.to_string(),
             "amount": amount.to_string()
@@ -828,14 +832,16 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             "Payment {} should be marked as Paid",
             i
         );
-        
+
         // Verify correct amount was recorded
         let recorded_amount = payment["amount"].as_str().unwrap();
         assert_eq!(
             recorded_amount,
             payment_amounts[i].to_string(),
             "Payment {} should have correct amount (expected: {}, got: {})",
-            i, payment_amounts[i], recorded_amount
+            i,
+            payment_amounts[i],
+            recorded_amount
         );
     }
 
@@ -1459,7 +1465,10 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // ========================================================================
     // STEP 6a: Deposit exact BTC amount to DAO treasury via intents
     // ========================================================================
-    println!("\nDepositing {} satoshis to DAO treasury via intents...", total_amount);
+    println!(
+        "\nDepositing {} satoshis to DAO treasury via intents...",
+        total_amount
+    );
 
     // Use ft_deposit on omft.near to deposit BTC tokens to intents for the DAO
     // This simulates a bridge deposit from Bitcoin network
@@ -1486,7 +1495,10 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .await?
         .assert_success();
 
-    println!("✓ DAO treasury holds {} satoshis via intents.near", total_amount);
+    println!(
+        "✓ DAO treasury holds {} satoshis via intents.near",
+        total_amount
+    );
 
     // Verify initial treasury balance
     let initial_treasury_balance: String = near_api::Contract(intents_id.clone())
@@ -1507,7 +1519,10 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         initial_balance_num, total_amount,
         "Initial treasury balance must equal total payment amount"
     );
-    println!("✓ Initial treasury BTC balance: {} satoshis", initial_balance_num);
+    println!(
+        "✓ Initial treasury BTC balance: {} satoshis",
+        initial_balance_num
+    );
 
     // ========================================================================
     // STEP 6b: Submit the payment list
@@ -1707,19 +1722,15 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             .await?;
 
         // Hard expectation: batch must succeed
-        assert!(
-            result.is_success(),
-            "Batch {} must succeed",
-            batch + 1
-        );
+        assert!(result.is_success(), "Batch {} must succeed", batch + 1);
 
         // Hard expectation: must have exactly one mt_burn and one ft_burn event per payment
         let logs = result.logs();
-        
+
         // Parse and verify burn events
         let mut mt_burn_events = Vec::new();
         let mut ft_burn_events = Vec::new();
-        
+
         for log in logs.iter() {
             if log.contains("mt_burn") {
                 println!("  mt_burn: {}", log);
@@ -1729,27 +1740,33 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
                 ft_burn_events.push(log.to_string());
             }
         }
-        
+
         // Hard expectation: exactly batch_size mt_burn events
         assert_eq!(
-            mt_burn_events.len(), batch_size as usize,
+            mt_burn_events.len(),
+            batch_size as usize,
             "Batch {} must have exactly {} mt_burn events (got: {})",
-            batch + 1, batch_size, mt_burn_events.len()
+            batch + 1,
+            batch_size,
+            mt_burn_events.len()
         );
-        
+
         // Hard expectation: exactly batch_size ft_burn events
         assert_eq!(
-            ft_burn_events.len(), batch_size as usize,
+            ft_burn_events.len(),
+            batch_size as usize,
             "Batch {} must have exactly {} ft_burn events (got: {})",
-            batch + 1, batch_size, ft_burn_events.len()
+            batch + 1,
+            batch_size,
+            ft_burn_events.len()
         );
-        
+
         // Verify each burn event contains correct amount
         // Note: Events may come in any order within a batch
         let batch_start_idx = batch as usize * batch_size as usize;
         let mut batch_amounts = Vec::new();
         let mut batch_recipients = Vec::new();
-        
+
         for offset in 0..batch_size as usize {
             let payment_idx = batch_start_idx + offset;
             if payment_idx >= payment_amounts.len() {
@@ -1758,36 +1775,44 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             batch_amounts.push(payment_amounts[payment_idx].to_string());
             batch_recipients.push(format!("bc1qtestaddress{:02}", payment_idx));
         }
-        
+
         // Check all expected amounts are present in mt_burn events
         for expected_amount in batch_amounts.iter() {
-            let mt_burn_found = mt_burn_events.iter().any(|log| {
-                log.contains(expected_amount)
-            });
+            let mt_burn_found = mt_burn_events
+                .iter()
+                .any(|log| log.contains(expected_amount));
             assert!(
                 mt_burn_found,
                 "Batch {} must have mt_burn event with amount {} (events: {:?})",
-                batch + 1, expected_amount, mt_burn_events
+                batch + 1,
+                expected_amount,
+                mt_burn_events
             );
         }
-        
+
         // Check all expected amounts and recipients are present in ft_burn events
-        for (expected_amount, expected_recipient) in batch_amounts.iter().zip(batch_recipients.iter()) {
-            let ft_burn_found = ft_burn_events.iter().any(|log| {
-                log.contains(expected_amount) && log.contains(expected_recipient)
-            });
+        for (expected_amount, expected_recipient) in
+            batch_amounts.iter().zip(batch_recipients.iter())
+        {
+            let ft_burn_found = ft_burn_events
+                .iter()
+                .any(|log| log.contains(expected_amount) && log.contains(expected_recipient));
             assert!(
                 ft_burn_found,
                 "Batch {} must have ft_burn event with amount {} and recipient {} (events: {:?})",
-                batch + 1, expected_amount, expected_recipient, ft_burn_events
+                batch + 1,
+                expected_amount,
+                expected_recipient,
+                ft_burn_events
             );
         }
-        
+
         total_burn_events += mt_burn_events.len() + ft_burn_events.len();
 
         // Hard expectation: contract balance must decrease by exact batch amount
         let batch_start_idx = batch as usize * batch_size as usize;
-        let batch_end_idx = std::cmp::min(batch_start_idx + batch_size as usize, payment_amounts.len());
+        let batch_end_idx =
+            std::cmp::min(batch_start_idx + batch_size as usize, payment_amounts.len());
         let batch_amount: u128 = payment_amounts[batch_start_idx..batch_end_idx].iter().sum();
         expected_remaining_balance -= batch_amount;
 
@@ -1824,7 +1849,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    
+
     // Hard expectation: must have exactly 200 burn events (100 mt_burn + 100 ft_burn)
     assert_eq!(
         total_burn_events, 200,
@@ -1872,7 +1897,9 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             amount,
             expected_amount.to_string(),
             "Payment {} must have correct amount (expected: {}, got: {})",
-            i, expected_amount, amount
+            i,
+            expected_amount,
+            amount
         );
     }
 
@@ -1896,15 +1923,13 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .data;
 
     let contract_balance_num: u128 = contract_balance.parse()?;
-    
+
     // Hard expectation: contract must have 0 balance after all payouts
     assert_eq!(
         contract_balance_num, 0,
         "Contract must have 0 BTC balance after all payouts (got: {} satoshis)",
         contract_balance_num
     );
-
-
 
     Ok(())
 }
