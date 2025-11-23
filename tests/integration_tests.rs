@@ -348,7 +348,8 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
     let user_id: AccountId = format!("user.{}", near_sandbox::config::DEFAULT_GENESIS_ACCOUNT)
         .parse()
         .unwrap();
-    let user_signer = create_account(&user_id, NearToken::from_near(300), &network_config).await;
+    // Increase balance to 500 NEAR to cover varying payment amounts (max ~400 NEAR)
+    let user_signer = create_account(&user_id, NearToken::from_near(500), &network_config).await;
 
     // Buy storage for 250 payments (need 250 credits, buy 260 to be safe)
     let num_records = 260;
@@ -379,12 +380,24 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         recipients.push(recipient);
     }
 
-    // Create 250 payment entries
+    // Create 250 payment entries with varying amounts (to test correct payment routing)
+    // Use deterministic "random" amounts between 0.5 and 2.5 NEAR
     let mut payments = Vec::new();
-    for recipient in recipients.iter() {
+    let mut payment_amounts = Vec::new();
+    let mut total_amount_yocto = 0u128;
+    
+    for (i, recipient) in recipients.iter().enumerate() {
+        // Generate amount: 0.5 NEAR + (i * 0.01 NEAR) % 2 NEAR
+        // Results in amounts between 0.5 and 2.49 NEAR
+        let base_amount = 500_000_000_000_000_000_000_000u128; // 0.5 NEAR
+        let variable_amount = (i as u128 * 10_000_000_000_000_000_000_000) % 2_000_000_000_000_000_000_000_000; // 0-2 NEAR
+        let amount = base_amount + variable_amount;
+        payment_amounts.push(amount);
+        total_amount_yocto += amount;
+        
         payments.push(json!({
             "recipient": recipient.to_string(),
-            "amount": "1000000000000000000000000" // 1 NEAR
+            "amount": amount.to_string()
         }));
     }
 
@@ -408,8 +421,8 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
     // List IDs start from 0 and increment
     let list_id: u64 = 0;
 
-    // Approve the list
-    let total_amount = NearToken::from_yoctonear(250_000_000_000_000_000_000_000_000); // 250 NEAR
+    // Approve the list with exact total amount
+    let total_amount = NearToken::from_yoctonear(total_amount_yocto);
 
     // Get contract balance before payouts
     let contract_balance_before = near_api::Account(contract_id.clone())
@@ -485,7 +498,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .assert_success();
 
-    // Verify all recipients received their payments
+    // Verify all recipients received their payments with correct varying amounts
     for (i, recipient) in recipients.iter().enumerate() {
         let balance = near_api::Account(recipient.clone())
             .view()
@@ -495,13 +508,18 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
             .data
             .amount;
 
-        // Each recipient started with 1 NEAR and should have received 1 NEAR
-        // Gas is not deducted from transfer amount, so balance should be exactly 2 NEAR
+        // Each recipient started with 1 NEAR and should have received their specific payment amount
+        let initial_balance = 1_000_000_000_000_000_000_000_000u128; // 1 NEAR
+        let expected_balance = initial_balance + payment_amounts[i];
+        
         assert_eq!(
             balance.as_yoctonear(),
-            2_000_000_000_000_000_000_000_000, // Exactly 2 NEAR
-            "Recipient {} should have exactly 2 NEAR, got: {} yoctoNEAR",
+            expected_balance,
+            "Recipient {} should have exactly {} yoctoNEAR (initial {} + payment {}), got: {}",
             i,
+            expected_balance,
+            initial_balance,
+            payment_amounts[i],
             balance.as_yoctonear()
         );
     }
@@ -540,6 +558,15 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
             payment["status"], "Paid",
             "Payment {} should be marked as Paid",
             i
+        );
+        
+        // Verify correct amount was recorded
+        let recorded_amount = payment["amount"].as_str().unwrap();
+        assert_eq!(
+            recorded_amount,
+            payment_amounts[i].to_string(),
+            "Payment {} should have correct amount (expected: {}, got: {})",
+            i, payment_amounts[i], recorded_amount
         );
     }
 
@@ -639,12 +666,24 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         recipients.push(recipient_id);
     }
 
-    // Create payment list with 100 recipients (1 wNEAR each)
+    // Create payment list with 100 recipients with varying amounts (to test correct payment routing)
+    // Use deterministic "random" amounts between 0.5 and 1.5 wNEAR
     let mut payments = Vec::new();
-    for recipient in recipients.iter() {
+    let mut payment_amounts = Vec::new();
+    let mut total_amount_yocto = 0u128;
+    
+    for (i, recipient) in recipients.iter().enumerate() {
+        // Generate amount: 0.5 wNEAR + (i * 0.01 wNEAR) % 1 wNEAR
+        // Results in amounts between 0.5 and 1.49 wNEAR
+        let base_amount = 500_000_000_000_000_000_000_000u128; // 0.5 wNEAR
+        let variable_amount = (i as u128 * 10_000_000_000_000_000_000_000) % 1_000_000_000_000_000_000_000_000; // 0-1 wNEAR
+        let amount = base_amount + variable_amount;
+        payment_amounts.push(amount);
+        total_amount_yocto += amount;
+        
         payments.push(json!({
             "recipient": recipient.to_string(),
-            "amount": "1000000000000000000000000" // 1 wNEAR
+            "amount": amount.to_string()
         }));
     }
 
@@ -686,7 +725,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
 
     // Approve the list using ft_transfer_call (NEP-141 standard)
     // This will call ft_on_transfer on the contract with the list_id as msg
-    let total_amount_str = "100000000000000000000000000"; // 100 wNEAR
+    let total_amount_str = total_amount_yocto.to_string();
     near_api::Contract(wrap_near_id.clone())
         .call_function(
             "ft_transfer_call",
@@ -748,7 +787,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         }
     }
 
-    // Verify all 100 recipients received their wNEAR payments
+    // Verify all 100 recipients received their wNEAR payments with correct varying amounts
     for (i, recipient) in recipients.iter().enumerate() {
         let recipient_balance: String = near_api::Contract(wrap_near_id.clone())
             .call_function(
@@ -762,10 +801,11 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             .unwrap()
             .data;
 
+        let expected_balance = payment_amounts[i].to_string();
         assert_eq!(
-            recipient_balance, "1000000000000000000000000",
-            "Recipient {} should have received 1 wNEAR",
-            i
+            recipient_balance, expected_balance,
+            "Recipient {} should have received exactly {} yoctoNEAR (got: {})",
+            i, expected_balance, recipient_balance
         );
     }
 
@@ -787,6 +827,15 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             payment["status"], "Paid",
             "Payment {} should be marked as Paid",
             i
+        );
+        
+        // Verify correct amount was recorded
+        let recorded_amount = payment["amount"].as_str().unwrap();
+        assert_eq!(
+            recorded_amount,
+            payment_amounts[i].to_string(),
+            "Payment {} should have correct amount (expected: {}, got: {})",
+            i, payment_amounts[i], recorded_amount
         );
     }
 
