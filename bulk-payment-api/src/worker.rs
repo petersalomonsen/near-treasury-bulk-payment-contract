@@ -43,6 +43,9 @@ pub struct PayoutWorker {
 
 impl PayoutWorker {
     /// Create a new payout worker
+    ///
+    /// Note: This function cannot be const because `BulkPaymentClient` contains
+    /// types that don't support const construction (e.g., `Arc<Signer>`).
     #[allow(clippy::missing_const_for_fn)]
     pub fn new(
         client: BulkPaymentClient,

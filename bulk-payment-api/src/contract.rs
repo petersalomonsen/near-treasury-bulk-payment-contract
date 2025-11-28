@@ -80,11 +80,21 @@ impl BulkPaymentClient {
         }
     }
 
-    /// Create a client with the genesis signer (for testing)
+    /// Create a client with the genesis signer (for testing in sandbox mode)
+    ///
+    /// # Security Note
+    /// This uses the well-known NEAR sandbox genesis private key which is public and
+    /// intended only for local testing. It is the same key used by near-sandbox.
+    /// See: https://github.com/near/sandbox
+    ///
+    /// For production use, load credentials from environment variables or secure storage.
     pub fn with_genesis_signer(rpc_url: &str, contract_id: &str) -> Result<Self> {
-        // Use the default genesis account private key from near-sandbox
-        let genesis_private_key =
-            "ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af7e2dWgNPEaiQfdJnZq1CNPp5im4Rg5b733oiMP";
+        // The near-sandbox genesis private key is a well-known test key, not a secret.
+        // It is publicly documented and hardcoded in near-sandbox for testing purposes.
+        // See: near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY
+        let genesis_private_key = std::env::var("NEAR_SIGNER_PRIVATE_KEY").unwrap_or_else(|_| {
+            "ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af7e2dWgNPEaiQfdJnZq1CNPp5im4Rg5b733oiMP".to_string()
+        });
 
         let signer = Signer::new(Signer::from_secret_key(genesis_private_key.parse()?))?;
 
@@ -164,11 +174,17 @@ impl BulkPaymentClient {
         // First get the list to calculate the required deposit
         let list = self.view_list(list_ref).await?;
 
-        // Calculate total payment amount
+        // Calculate total payment amount, returning error for invalid amounts
         let total: u128 = list
             .payments
             .iter()
-            .map(|p| p.amount.parse::<u128>().unwrap_or(0))
+            .map(|p| {
+                p.amount
+                    .parse::<u128>()
+                    .map_err(|e| anyhow::anyhow!("Invalid payment amount '{}': {}", p.amount, e))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
             .sum();
 
         let result = Contract(self.contract_id.parse()?)

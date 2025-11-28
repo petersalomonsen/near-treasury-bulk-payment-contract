@@ -75,8 +75,8 @@ WORKDIR /app
 COPY --from=api-builder /build/target/release/bulk-payment-api /usr/local/bin/
 COPY --from=indexer-builder /app/target/release/sputnik-indexer /usr/local/bin/
 
-# Copy contract WASM
-COPY --from=contract-builder /build/target/near/*.wasm /app/contracts/bulk_payment.wasm
+# Copy contract WASM (specific filename from cargo-near build)
+COPY --from=contract-builder /build/target/near/near_treasury_bulk_payment_contract.wasm /app/contracts/bulk_payment.wasm
 
 # Copy initialization script and configuration
 COPY sandbox/init-sandbox.sh /app/

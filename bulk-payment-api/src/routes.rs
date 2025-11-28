@@ -66,9 +66,9 @@ pub struct PaymentListView {
 /// Health check response
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
-    pub status: String,
-    pub service: String,
-    pub version: String,
+    pub status: &'static str,
+    pub service: &'static str,
+    pub version: &'static str,
 }
 
 impl From<(u64, PaymentList)> for PaymentListView {
@@ -121,9 +121,9 @@ pub fn create_router(state: AppState) -> Router {
 /// Health check endpoint
 async fn health_check() -> impl IntoResponse {
     Json(HealthResponse {
-        status: "healthy".to_string(),
-        service: "bulk-payment-api".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        status: "healthy",
+        service: "bulk-payment-api",
+        version: env!("CARGO_PKG_VERSION"),
     })
 }
 
