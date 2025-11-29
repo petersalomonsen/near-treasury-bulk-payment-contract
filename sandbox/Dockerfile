@@ -73,9 +73,12 @@ RUN git clone --depth 1 https://github.com/near-daos/sputnik-dao-caching-api-ser
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS indexer-builder
+# Clone the repository first
+RUN git clone --depth 1 https://github.com/near-daos/sputnik-dao-caching-api-server.git .
+# Copy the recipe and cook dependencies (this uses the cloned Cargo.toml)
 COPY --from=indexer-planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
-RUN git clone --depth 1 https://github.com/near-daos/sputnik-dao-caching-api-server.git .
+# Build the project (source files are already present from git clone)
 RUN cargo build --release --bin sputnik-indexer
 
 # ============================================================================
