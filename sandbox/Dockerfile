@@ -7,7 +7,8 @@
 # ============================================================================
 # Stage 1: Build the Bulk Payment Contract
 # ============================================================================
-FROM rust:1.86 AS contract-builder
+# cargo-near 0.17.0 requires Rust 1.89+
+FROM rust:1.89 AS contract-builder
 
 WORKDIR /build
 
@@ -24,7 +25,7 @@ RUN cargo near build non-reproducible-wasm
 # ============================================================================
 # Stage 2: Build the Sandbox Initializer
 # ============================================================================
-FROM rust:1.86 AS sandbox-builder
+FROM rust:1.89 AS sandbox-builder
 
 WORKDIR /build
 
@@ -44,7 +45,7 @@ RUN cargo build --release
 # ============================================================================
 # Stage 3: Build the Bulk Payment API
 # ============================================================================
-FROM rust:1.86 AS api-builder
+FROM rust:1.89 AS api-builder
 
 WORKDIR /build
 
