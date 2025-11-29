@@ -8,11 +8,11 @@ This directory contains the configuration for deploying a comprehensive sandbox 
 - Local NEAR blockchain environment for testing
 - Uses the `near-sandbox` Rust crate (v0.2.2) for running the sandbox
 - Pre-deployed contracts on startup:
-  - `bulk-payment.test.near` - Bulk payment contract (built from this repo)
+  - `bulk-payment.sandbox` - Bulk payment contract (built from this repo)
   - `intents.near` - Imported from mainnet
   - `omft.near` - Imported from mainnet
   - `wrap.near` - Imported from mainnet
-  - `sample-dao.test.near` - Sample DAO (optional, if sputnikdao2.wasm is provided)
+  - `sample-dao.sandbox` - Sample DAO (optional, if sputnikdao2.wasm is provided)
 
 ### 2. Bulk Payment API (Port 8080)
 - REST API for submitting and managing payment lists
@@ -126,7 +126,7 @@ curl https://near-treasury-sandbox.fly.dev:8080/list/0
 ### Query DAO Proposals (Indexer)
 
 ```bash
-curl https://near-treasury-sandbox.fly.dev:5001/proposals/sample-dao.test.near
+curl https://near-treasury-sandbox.fly.dev:5001/proposals/sample-dao.sandbox
 ```
 
 ### Direct RPC Calls (Sandbox)
@@ -141,7 +141,7 @@ curl -X POST https://near-treasury-sandbox.fly.dev:3030 \
     "params": {
       "request_type": "view_account",
       "finality": "final",
-      "account_id": "bulk-payment.test.near"
+      "account_id": "bulk-payment.sandbox"
     }
   }'
 ```
