@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for NEAR Treasury Sandbox Test Environment
 # Builds and runs:
-# - NEAR Sandbox (blockchain)
+# - NEAR Sandbox (via near-sandbox Rust crate)
 # - Bulk Payment API (REST service)
 # - Sputnik DAO Indexer (proposal caching)
 
@@ -22,11 +22,37 @@ COPY src ./src
 RUN cargo near build non-reproducible-wasm --no-docker
 
 # ============================================================================
-# Stage 2: Build the Bulk Payment API
+# Stage 2: Build the Sandbox Initializer
+# ============================================================================
+FROM rust:1.86 AS sandbox-builder
+
+WORKDIR /build
+
+# Install system dependencies for near-sandbox
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the sandbox-init source
+COPY sandbox/sandbox-init/Cargo.toml ./
+COPY sandbox/sandbox-init/src ./src
+
+# Build the sandbox initializer
+RUN cargo build --release
+
+# ============================================================================
+# Stage 3: Build the Bulk Payment API
 # ============================================================================
 FROM rust:1.86 AS api-builder
 
 WORKDIR /build
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the API source
 COPY bulk-payment-api/Cargo.toml bulk-payment-api/Cargo.lock ./
@@ -36,7 +62,7 @@ COPY bulk-payment-api/src ./src
 RUN cargo build --release
 
 # ============================================================================
-# Stage 3: Build the Sputnik Indexer
+# Stage 4: Build the Sputnik Indexer
 # ============================================================================
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /app
@@ -52,41 +78,33 @@ RUN git clone --depth 1 https://github.com/near-daos/sputnik-dao-caching-api-ser
 RUN cargo build --release --bin sputnik-indexer
 
 # ============================================================================
-# Stage 4: Runtime environment
+# Stage 5: Runtime environment
 # ============================================================================
 FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     curl \
-    jq \
     supervisor \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# Install NEAR Sandbox binary
-RUN curl -L https://github.com/near/sandbox/releases/latest/download/near-sandbox-linux-amd64.tar.gz \
-    | tar -xzf - -C /usr/local/bin
 
 # Create application directory
 WORKDIR /app
 
 # Copy built binaries
+COPY --from=sandbox-builder /build/target/release/sandbox-init /usr/local/bin/
 COPY --from=api-builder /build/target/release/bulk-payment-api /usr/local/bin/
 COPY --from=indexer-builder /app/target/release/sputnik-indexer /usr/local/bin/
 
 # Copy contract WASM (specific filename from cargo-near build)
 COPY --from=contract-builder /build/target/near/near_treasury_bulk_payment_contract.wasm /app/contracts/bulk_payment.wasm
 
-# Copy initialization script and configuration
-COPY sandbox/init-sandbox.sh /app/
+# Copy supervisord configuration
 COPY sandbox/supervisord.conf /etc/supervisor/conf.d/
 
 # Copy sputnikdao2.wasm if available (for sample DAO)
 COPY sandbox/contracts/ /app/contracts/
-
-# Make scripts executable
-RUN chmod +x /app/init-sandbox.sh
 
 # Create data directory for persistent storage
 RUN mkdir -p /data /var/log

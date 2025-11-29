@@ -6,12 +6,13 @@ This directory contains the configuration for deploying a comprehensive sandbox 
 
 ### 1. NEAR Sandbox (Port 3030)
 - Local NEAR blockchain environment for testing
+- Uses the `near-sandbox` Rust crate (v0.2.2) for running the sandbox
 - Pre-deployed contracts on startup:
   - `bulk-payment.test.near` - Bulk payment contract (built from this repo)
   - `intents.near` - Imported from mainnet
   - `omft.near` - Imported from mainnet
   - `wrap.near` - Imported from mainnet
-  - `sample-dao.sputnik-dao.near` - Sample DAO (optional)
+  - `sample-dao.test.near` - Sample DAO (optional, if sputnikdao2.wasm is provided)
 
 ### 2. Bulk Payment API (Port 8080)
 - REST API for submitting and managing payment lists
@@ -25,6 +26,22 @@ This directory contains the configuration for deploying a comprehensive sandbox 
 - Caching API server for SputnikDAO contracts
 - Configured to point to the sandbox RPC instead of mainnet
 - Provides proposal search, filtering, and voting discovery
+
+## Directory Structure
+
+```
+sandbox/
+├── Dockerfile              # Multi-stage build for all services
+├── fly.toml               # Fly.io configuration
+├── supervisord.conf       # Process supervisor config
+├── sandbox-init/          # Rust-based sandbox initializer
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs        # Sandbox initialization logic
+├── contracts/             # Contract WASM artifacts
+│   └── .gitkeep
+└── README.md              # This file
+```
 
 ## Deployment
 
@@ -109,7 +126,7 @@ curl https://near-treasury-sandbox.fly.dev:8080/list/0
 ### Query DAO Proposals (Indexer)
 
 ```bash
-curl https://near-treasury-sandbox.fly.dev:5001/proposals/sample-dao.sputnik-dao.near
+curl https://near-treasury-sandbox.fly.dev:5001/proposals/sample-dao.test.near
 ```
 
 ### Direct RPC Calls (Sandbox)
@@ -139,13 +156,14 @@ curl -X POST https://near-treasury-sandbox.fly.dev:3030 \
 | `BULK_PAYMENT_CONTRACT_ID` | `bulk-payment.test.near` | Contract ID for bulk payments |
 | `API_PORT` | `8080` | Port for the Bulk Payment API |
 | `INDEXER_PORT` | `5001` | Port for the Sputnik Indexer |
+| `CONTRACTS_DIR` | `/app/contracts` | Directory containing contract WASM files |
 
 ### Adding Custom Contracts
 
 To deploy additional contracts:
 
 1. Add the WASM file to `sandbox/contracts/`
-2. Modify `init-sandbox.sh` to create the account and deploy the contract
+2. Modify `sandbox/sandbox-init/src/main.rs` to deploy your contract
 
 ## Troubleshooting
 
@@ -156,7 +174,7 @@ To deploy additional contracts:
 fly ssh console
 
 # View logs
-tail -f /var/log/near-sandbox.log
+tail -f /var/log/sandbox-init.log
 tail -f /var/log/bulk-payment-api.log
 tail -f /var/log/sputnik-indexer.log
 ```
@@ -172,8 +190,8 @@ supervisorctl restart all
 
 ```bash
 fly ssh console
-rm -f /data/.initialized
-supervisorctl restart init-sandbox
+rm -rf /data/near-sandbox
+supervisorctl restart sandbox-init
 ```
 
 ## Architecture
@@ -185,7 +203,7 @@ supervisorctl restart init-sandbox
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │                   Supervisord                        │   │
 │  │  ┌───────────────┐ ┌───────────────┐ ┌─────────────┐ │   │
-│  │  │ near-sandbox  │ │bulk-payment-  │ │  sputnik-   │ │   │
+│  │  │ sandbox-init  │ │bulk-payment-  │ │  sputnik-   │ │   │
 │  │  │   :3030       │ │    api        │ │  indexer    │ │   │
 │  │  │               │ │   :8080       │ │   :5001     │ │   │
 │  │  └───────────────┘ └───────────────┘ └─────────────┘ │   │
@@ -195,7 +213,6 @@ supervisorctl restart init-sandbox
 │  │              Persistent Volume (/data)               │   │
 │  │   - Sandbox blockchain state                         │   │
 │  │   - Indexer cache                                    │   │
-│  │   - Initialization marker                            │   │
 │  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -203,6 +220,7 @@ supervisorctl restart init-sandbox
 ## Related Documentation
 
 - [NEAR Sandbox Documentation](https://docs.near.org/tools/near-sandbox)
+- [near-sandbox Rust crate](https://crates.io/crates/near-sandbox)
 - [Bulk Payment Contract](../README.md)
 - [Sputnik DAO Indexer](https://github.com/near-daos/sputnik-dao-caching-api-server)
 - [Fly.io Documentation](https://fly.io/docs/)
