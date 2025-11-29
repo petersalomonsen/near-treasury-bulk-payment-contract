@@ -16,7 +16,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # NEAR SDK
-near-api = "0.7.7"
+near-api = "0.7.8"
 near-crypto = "0.31"
 
 # Serialization

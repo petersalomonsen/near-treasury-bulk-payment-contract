@@ -12,14 +12,14 @@ FROM rust:1.86 AS contract-builder
 WORKDIR /build
 
 # Install cargo-near for building the contract
-RUN cargo install cargo-near --version 0.14.2
+RUN cargo install cargo-near --version 0.17.0
 
 # Copy the contract source
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
 # Build the WASM contract
-RUN cargo near build non-reproducible-wasm --no-docker
+RUN cargo near build non-reproducible-wasm
 
 # ============================================================================
 # Stage 2: Build the Sandbox Initializer
