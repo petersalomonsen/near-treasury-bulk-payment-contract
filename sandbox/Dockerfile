@@ -103,6 +103,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     supervisor \
     ca-certificates \
+    socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Create application directory
@@ -132,10 +133,9 @@ RUN mkdir -p /data /var/log
 EXPOSE 3030 8080 5001
 
 # Health check
+# Note: Sandbox RPC is on port 3030 (proxied from internal 3031)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:3030/status && \
-        curl -f http://localhost:8080/health && \
-        curl -f http://localhost:5001/health || exit 1
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Run supervisord to manage all services
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

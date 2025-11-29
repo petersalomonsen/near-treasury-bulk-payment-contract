@@ -268,9 +268,10 @@ async fn main() -> Result<()> {
 
     info!("Starting NEAR sandbox...");
 
-    // Configure sandbox with specific RPC port for external access
+    // Configure sandbox to run on port 3031 internally
+    // A socat proxy will forward 0.0.0.0:3030 -> 127.0.0.1:3031 for external access
     let config = SandboxConfig {
-        rpc_port: Some(3030),
+        rpc_port: Some(3031),
         additional_accounts: vec![wrap_near_account, intents_account, omft_account],
         ..Default::default()
     };
@@ -281,6 +282,10 @@ async fn main() -> Result<()> {
         .context("Failed to start sandbox")?;
 
     info!("Sandbox started at RPC address: {}", sandbox.rpc_addr);
+    
+    // The sandbox binds to 127.0.0.1 internally, which is accessible within the container.
+    // For external Docker access, we need to use the host network or rely on Docker port forwarding
+    // to map 0.0.0.0:3030 on the host to 127.0.0.1:3030 inside the container.
 
     // Configure network using the sandbox RPC address
     let network_config = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse().unwrap());
