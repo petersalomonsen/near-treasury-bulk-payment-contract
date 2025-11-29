@@ -87,8 +87,8 @@ curl https://near-treasury-sandbox.fly.dev:5001/health
 You can also run the sandbox environment locally using Docker:
 
 ```bash
-# Build the image
-docker build -f sandbox/Dockerfile -t near-treasury-sandbox .
+# Build the image for linux/amd64 platform (required)
+docker build --platform linux/amd64 -f sandbox/Dockerfile -t near-treasury-sandbox .
 
 # Run with persistent storage
 docker run -d \
@@ -99,6 +99,45 @@ docker run -d \
   -v sandbox_data:/data \
   near-treasury-sandbox
 ```
+
+### Platform Support
+
+The Docker image targets `linux/amd64` because the NEAR sandbox requires x86_64 architecture.
+
+#### Apple Silicon (M1/M2/M3)
+
+**Limitation**: The NEAR sandbox binary uses x32 ABI (x86_64 with 32-bit pointers) for optimization. This is not compatible with Rosetta emulation, which only supports standard x86_64 ABI.
+
+**Options**:
+1. **Recommended**: Use Fly.io deployment for full functionality (see [Fly.io Deployment](#deploy-to-flyio))
+2. **Alternative**: Run API-only mode on your local machine
+3. **Development**: Use a native x86_64 Linux VM or remote server
+
+To run just the Bulk Payment API without the sandbox:
+```bash
+# Set up a testnet account and contract
+# Then configure and run the API separately:
+export NEAR_RPC_URL="https://rpc.testnet.near.org"
+export BULK_PAYMENT_CONTRACT_ID="your-contract.testnet"
+cargo run -p bulk-payment-api
+```
+
+#### Mac with Intel
+Docker Desktop works natively with x86_64 images. The sandbox should work without issues.
+
+#### Linux x86_64
+Works natively without any emulation.
+
+### Investigating the Sandbox Issue
+
+The sandbox fails on Rosetta with exit code 132 (SIGILL - Illegal Instruction). This occurs because:
+
+1. The `near-sandbox` crate downloads a precompiled binary from NEAR's S3: `nearcore/Linux-x86_64/2.9.0/near-sandbox`
+2. This binary is compiled with x32 ABI (32-bit pointers on x86_64)
+3. Rosetta translator doesn't support x32 ABI instructions
+4. When the binary attempts to execute x32-specific instructions, it fails with SIGILL
+
+This is a fundamental platform incompatibility, not a configuration issue.
 
 ## Usage
 

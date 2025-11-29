@@ -94,6 +94,8 @@ Views storage credits for an account.
 
 ## Building
 
+### Smart Contract
+
 ```bash
 # Check the contract compiles
 cargo check --target wasm32-unknown-unknown
@@ -104,6 +106,31 @@ cargo build --target wasm32-unknown-unknown --release
 # WASM output location
 # target/wasm32-unknown-unknown/release/near_treasury_bulk_payment_contract.wasm
 ```
+
+### Docker Sandbox (Testing)
+
+Build and run a complete sandbox test environment with the contract, API, and indexer:
+
+```bash
+# Build the Docker image for linux/amd64 platform
+docker build --platform linux/amd64 -f sandbox/Dockerfile -t near-treasury-sandbox .
+
+# Run the sandbox with persistent storage
+docker run -d \
+  --name near-treasury-sandbox \
+  -p 3030:3030 \
+  -p 8080:8080 \
+  -p 5001:5001 \
+  -v sandbox_data:/data \
+  near-treasury-sandbox
+```
+
+**Note**: The Docker image is built for `linux/amd64`. If you're on Apple Silicon (M1/M2/M3), you can use Colima with Rosetta emulation:
+```bash
+colima start --cpu 4 --memory 8 --arch x86_64
+```
+
+See [sandbox/README.md](sandbox/README.md) for detailed setup and API usage documentation.
 
 ## Testing
 
