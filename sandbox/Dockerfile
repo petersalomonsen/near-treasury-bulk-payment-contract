@@ -12,6 +12,12 @@ FROM rust:1.89 AS contract-builder
 
 WORKDIR /build
 
+# Install system dependencies for cargo-near (hidapi requires libudev)
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libudev-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install cargo-near for building the contract
 RUN cargo install cargo-near --version 0.17.0
 
