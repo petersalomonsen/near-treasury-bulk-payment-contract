@@ -7,7 +7,7 @@
 # ============================================================================
 # Stage 1: Build the Bulk Payment Contract
 # ============================================================================
-# cargo-near 0.17.0 requires Rust 1.89+
+# cargo-near 0.17.0 requires Rust 1.89+, but the contract needs Rust 1.86
 FROM rust:1.89 AS contract-builder
 
 WORKDIR /build
@@ -18,14 +18,20 @@ RUN apt-get update && apt-get install -y \
     libudev-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cargo-near for building the contract
+# Install cargo-near for building the contract (requires Rust 1.89)
 RUN cargo install cargo-near --version 0.17.0
+
+# Install Rust 1.86 toolchain for building the contract
+RUN rustup install 1.86.0 && rustup target add wasm32-unknown-unknown --toolchain 1.86.0
 
 # Copy the contract source
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Build the WASM contract
+# Create rust-toolchain.toml to use Rust 1.86 for this crate
+RUN echo '[toolchain]\nchannel = "1.86.0"' > rust-toolchain.toml
+
+# Build the WASM contract (uses Rust 1.86 via rust-toolchain.toml)
 RUN cargo near build non-reproducible-wasm
 
 # ============================================================================
