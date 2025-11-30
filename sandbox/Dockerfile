@@ -77,20 +77,12 @@ RUN cargo build --release
 # ============================================================================
 # Stage 4: Build the Sputnik Indexer
 # ============================================================================
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM rust:1.90 AS indexer-builder
+
 WORKDIR /app
 
-FROM chef AS indexer-planner
+# Clone and build sputnik-indexer directly (simple approach)
 RUN git clone --depth 1 https://github.com/near-daos/sputnik-dao-caching-api-server.git .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS indexer-builder
-# Clone the repository first
-RUN git clone --depth 1 https://github.com/near-daos/sputnik-dao-caching-api-server.git .
-# Copy the recipe and cook dependencies (this uses the cloned Cargo.toml)
-COPY --from=indexer-planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-# Build the project (source files are already present from git clone)
 RUN cargo build --release --bin sputnik-indexer
 
 # ============================================================================
