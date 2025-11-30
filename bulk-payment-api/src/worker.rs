@@ -27,7 +27,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             poll_interval: 5,
-            max_payments_per_batch: 100,
+            max_payments_per_batch: 10, // Keep small to avoid gas issues
             caller_id: "test.near".to_string(),
         }
     }

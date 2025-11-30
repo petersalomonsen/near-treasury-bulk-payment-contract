@@ -151,16 +151,41 @@ impl BulkPaymentContract {
     }
 
     /// Submit a payment list with pending status
-    pub fn submit_list(&mut self, token_id: String, payments: Vec<PaymentInput>) -> u64 {
+    ///
+    /// # Arguments
+    /// * `token_id` - The token to use for payments ("native" for NEAR, or token contract ID)
+    /// * `payments` - List of payment records with recipient and amount
+    /// * `submitter_id` - Optional submitter account ID. If provided, only the contract account
+    ///                    can call this function to submit on behalf of another account (e.g., a DAO).
+    ///                    The submitter must have sufficient storage credits.
+    ///                    If not provided, the caller becomes the submitter.
+    pub fn submit_list(
+        &mut self,
+        token_id: String,
+        payments: Vec<PaymentInput>,
+        submitter_id: Option<AccountId>,
+    ) -> u64 {
         require!(!payments.is_empty(), "Payment list cannot be empty");
 
         let caller = env::predecessor_account_id();
 
-        // Verify storage credits
+        // Determine the effective submitter
+        let submitter = if let Some(ref sid) = submitter_id {
+            // Only the contract account can submit on behalf of another account
+            require!(
+                caller == env::current_account_id(),
+                "Only the contract account can submit on behalf of another account"
+            );
+            sid.clone()
+        } else {
+            caller.clone()
+        };
+
+        // Verify storage credits for the submitter
         let required_credits = payments.len() as u128;
         let current_credits = self
             .storage_credits
-            .get(&caller)
+            .get(&submitter)
             .copied()
             .unwrap_or(NearToken::from_yoctonear(0))
             .as_yoctonear();
@@ -173,9 +198,9 @@ impl BulkPaymentContract {
             )
         );
 
-        // Deduct storage credits
+        // Deduct storage credits from the submitter
         let new_credits = NearToken::from_yoctonear(current_credits - required_credits);
-        self.storage_credits.insert(caller.clone(), new_credits);
+        self.storage_credits.insert(submitter.clone(), new_credits);
 
         // Convert PaymentInput to PaymentRecord with Pending status
         let payment_records: Vec<PaymentRecord> = payments
@@ -193,7 +218,7 @@ impl BulkPaymentContract {
 
         let payment_list = PaymentList {
             token_id,
-            submitter: caller.clone(),
+            submitter: submitter.clone(),
             status: ListStatus::Pending,
             payments: payment_records,
             created_at: env::block_timestamp(),
@@ -204,7 +229,7 @@ impl BulkPaymentContract {
         log!(
             "Payment list {} submitted by {} with {} payments",
             list_id,
-            caller,
+            submitter,
             self.payment_lists.get(&list_id).unwrap().payments.len()
         );
 
@@ -701,7 +726,7 @@ mod tests {
             },
         ];
 
-        let list_id = contract.submit_list("native".to_string(), payments);
+        let list_id = contract.submit_list("native".to_string(), payments, None);
 
         // Verify credits were deducted (10 - 2 = 8)
         let credits = contract.view_storage_credits(accounts(0));
@@ -728,7 +753,7 @@ mod tests {
         }];
 
         // Should panic - no storage credits
-        contract.submit_list("native".to_string(), payments);
+        contract.submit_list("native".to_string(), payments, None);
     }
 
     #[test]
@@ -757,7 +782,7 @@ mod tests {
             },
         ];
 
-        let list_id = contract.submit_list("native".to_string(), payments);
+        let list_id = contract.submit_list("native".to_string(), payments, None);
 
         // Approve with exact deposit (3 NEAR total)
         let total_deposit = NearToken::from_yoctonear(3_000_000_000_000_000_000_000_000);
@@ -792,7 +817,7 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments);
+        let list_id = contract.submit_list("native".to_string(), payments, None);
 
         // Try to approve with wrong deposit
         let wrong_deposit = NearToken::from_yoctonear(500_000_000_000_000_000_000_000);
@@ -823,7 +848,7 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments);
+        let list_id = contract.submit_list("native".to_string(), payments, None);
 
         // User 1 tries to approve (should fail)
         context = get_context(accounts(1));
@@ -854,7 +879,7 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments);
+        let list_id = contract.submit_list("native".to_string(), payments, None);
 
         // Reject without approval first
         contract.reject_list(list_id);
@@ -884,7 +909,7 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments);
+        let list_id = contract.submit_list("native".to_string(), payments, None);
 
         // Approve the list
         context.attached_deposit(NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000));
@@ -923,8 +948,8 @@ mod tests {
             amount: U128(2_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id1 = contract.submit_list("native".to_string(), payments1);
-        let list_id2 = contract.submit_list("native".to_string(), payments2);
+        let list_id1 = contract.submit_list("native".to_string(), payments1, None);
+        let list_id2 = contract.submit_list("native".to_string(), payments2, None);
 
         assert_eq!(list_id1, 0);
         assert_eq!(list_id2, 1);

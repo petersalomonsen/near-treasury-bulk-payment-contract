@@ -114,7 +114,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/submit-list", post(submit_list))
-        .route("/list/{id}", get(get_list))
+        .route("/list/:id", get(get_list))
         .with_state(state)
 }
 

@@ -46,10 +46,11 @@ const CONFIG = {
   NUM_RECIPIENTS: parseInt(process.env.NUM_RECIPIENTS || '500', 10),
   PAYMENT_AMOUNT: process.env.PAYMENT_AMOUNT || '100000000000000000000000', // 0.1 NEAR per recipient
   
-  // Genesis account credentials (default sandbox genesis account - PUBLIC TEST KEY)
+  // Genesis account credentials (default sandbox genesis account from near-sandbox-rs - PUBLIC TEST KEY)
+  // See: https://github.com/near/near-sandbox-rs/blob/main/src/config.rs
   // This is the well-known sandbox test account key, safe for testing purposes only
-  GENESIS_ACCOUNT_ID: process.env.GENESIS_ACCOUNT_ID || 'test.near',
-  GENESIS_PRIVATE_KEY: process.env.GENESIS_PRIVATE_KEY || 'ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af7e2dWgNPEaiQfdJnZq1CNPp5im4Rg5b733oiMP',
+  GENESIS_ACCOUNT_ID: process.env.GENESIS_ACCOUNT_ID || 'sandbox',
+  GENESIS_PRIVATE_KEY: process.env.GENESIS_PRIVATE_KEY || 'ed25519:3tgdk2wPraJzT4nsTuf86UX41xgPNk3MHnq8epARMdBNs29AFEztAuaQ7iHddDfXG9F2RzV1XNQYgJyAyoW51UBB',
 };
 
 // ============================================================================
@@ -180,7 +181,7 @@ async function createDAO(account, daoName, creatorAccountId) {
     methodName: 'create',
     args: createDaoArgs,
     gas: '300000000000000', // 300 TGas
-    attachedDeposit: parseNEAR('6'), // 6 NEAR for DAO creation
+    attachedDeposit: parseNEAR('100'), // 100 NEAR for DAO creation (needs funds for proposals)
   });
   
   console.log(`✅ DAO created: ${daoName}.${CONFIG.DAO_FACTORY_ID}`);

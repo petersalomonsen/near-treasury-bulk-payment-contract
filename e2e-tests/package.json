@@ -10,7 +10,8 @@
     "test:fly": "node dao-bulk-payment-flow.js"
   },
   "dependencies": {
-    "near-api-js": "^5.0.1"
+    "near-api-js": "^5.0.1",
+    "@near-js/jsonrpc-client": "^1.5.0"
   },
   "devDependencies": {},
   "keywords": [

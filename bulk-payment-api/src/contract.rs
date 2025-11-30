@@ -102,6 +102,11 @@ impl BulkPaymentClient {
     }
 
     /// Submit a new payment list to the contract
+    ///
+    /// The API signs as the contract account itself, and passes the submitter_id
+    /// to the contract so it can record who the logical submitter is. This allows
+    /// DAOs to use the API for submitting lists without needing to include the full
+    /// payment list in a DAO proposal.
     pub async fn submit_list(
         &self,
         submitter_id: &str,
@@ -114,16 +119,18 @@ impl BulkPaymentClient {
             payments.len()
         );
 
+        // Sign as the contract account, but pass submitter_id to the contract
         let result = Contract(self.contract_id.parse()?)
             .call_function(
                 "submit_list",
                 json!({
                     "token_id": token_id,
-                    "payments": payments
+                    "payments": payments,
+                    "submitter_id": submitter_id
                 }),
             )?
             .transaction()
-            .with_signer(submitter_id.parse()?, self.signer.clone())
+            .with_signer(self.contract_id.parse()?, self.signer.clone())
             .send_to(&self.network_config)
             .await
             .context("Failed to submit payment list")?;
@@ -132,10 +139,9 @@ impl BulkPaymentClient {
             anyhow::bail!("Transaction failed: {:?}", result);
         }
 
-        // Parse the list ID from the return value
+        // Parse the list ID from the logs (uses logs() to get logs from all receipts)
         let list_id: u64 = result
-            .outcome()
-            .logs
+            .logs()
             .iter()
             .find_map(|log| {
                 if log.starts_with("Payment list ") {
@@ -235,10 +241,9 @@ impl BulkPaymentClient {
             anyhow::bail!("Payout batch transaction failed: {:?}", result);
         }
 
-        // Parse processed count from logs
+        // Parse processed count from logs (uses logs() to get logs from all receipts)
         let processed = result
-            .outcome()
-            .logs
+            .logs()
             .iter()
             .find_map(|log| {
                 if log.starts_with("Processed ") {
