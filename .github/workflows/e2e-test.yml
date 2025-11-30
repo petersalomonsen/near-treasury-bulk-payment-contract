@@ -1,0 +1,118 @@
+# E2E Test Workflow: DAO Bulk Payment Flow
+#
+# This workflow runs the end-to-end test that demonstrates the full DAO bulk payment flow:
+# 1. Builds and starts the Docker container with all services
+# 2. Runs the JavaScript test script that:
+#    - Creates a Sputnik DAO
+#    - Creates and approves buy_storage proposal
+#    - Submits payment list via API
+#    - Creates and approves list approval proposal
+#    - Verifies recipients received their tokens
+#
+# The test can also be run against a deployed Fly.io instance by setting
+# SANDBOX_RPC_URL and API_URL environment variables.
+
+name: E2E Test - DAO Bulk Payment
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'sandbox/**'
+      - 'bulk-payment-api/**'
+      - 'e2e-tests/**'
+      - 'src/**'
+      - '.github/workflows/e2e-test.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'sandbox/**'
+      - 'bulk-payment-api/**'
+      - 'e2e-tests/**'
+      - 'src/**'
+      - '.github/workflows/e2e-test.yml'
+  workflow_dispatch:
+    inputs:
+      fly_app_url:
+        description: 'Fly.io app URL (optional, runs against Docker if not provided)'
+        required: false
+        type: string
+
+jobs:
+  e2e-test:
+    name: Run E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install test dependencies
+        working-directory: ./e2e-tests
+        run: npm install
+      
+      - name: Build Docker image
+        if: ${{ !inputs.fly_app_url }}
+        run: |
+          docker build -t near-treasury-sandbox -f sandbox/Dockerfile .
+      
+      - name: Start Docker container
+        if: ${{ !inputs.fly_app_url }}
+        run: |
+          docker run -d \
+            --name sandbox \
+            -p 3030:3030 \
+            -p 8080:8080 \
+            -p 5001:5001 \
+            near-treasury-sandbox
+          
+          # Wait for services to be ready
+          echo "Waiting for services to start..."
+          sleep 30
+          
+          # Check health
+          for i in {1..30}; do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "API is ready!"
+              break
+            fi
+            echo "Waiting for API... ($i/30)"
+            sleep 5
+          done
+          
+          # Show container logs
+          docker logs sandbox
+      
+      - name: Run E2E tests against Docker
+        if: ${{ !inputs.fly_app_url }}
+        working-directory: ./e2e-tests
+        env:
+          SANDBOX_RPC_URL: http://localhost:3030
+          API_URL: http://localhost:8080
+          NUM_RECIPIENTS: '100'  # Reduced for CI to speed up tests
+        run: npm run test:docker
+      
+      - name: Run E2E tests against Fly.io
+        if: ${{ inputs.fly_app_url }}
+        working-directory: ./e2e-tests
+        env:
+          SANDBOX_RPC_URL: ${{ inputs.fly_app_url }}:3030
+          API_URL: ${{ inputs.fly_app_url }}:8080
+          NUM_RECIPIENTS: '100'
+        run: npm test
+      
+      - name: Show Docker logs on failure
+        if: failure() && !inputs.fly_app_url
+        run: docker logs sandbox
+      
+      - name: Stop Docker container
+        if: always() && !inputs.fly_app_url
+        run: |
+          docker stop sandbox || true
+          docker rm sandbox || true

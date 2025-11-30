@@ -1,0 +1,2 @@
+# This directory stores contract WASM artifacts
+# Contracts are fetched from mainnet or built during container initialization

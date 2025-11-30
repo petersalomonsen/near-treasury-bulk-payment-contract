@@ -1,0 +1,26 @@
+{
+  "name": "bulk-payment-e2e-tests",
+  "version": "1.0.0",
+  "description": "End-to-end tests for the bulk payment contract with DAO integration",
+  "main": "dao-bulk-payment-flow.js",
+  "type": "module",
+  "scripts": {
+    "test": "node dao-bulk-payment-flow.js",
+    "test:docker": "SANDBOX_RPC_URL=http://localhost:3030 API_URL=http://localhost:8080 node dao-bulk-payment-flow.js",
+    "test:fly": "node dao-bulk-payment-flow.js"
+  },
+  "dependencies": {
+    "near-api-js": "^5.0.1",
+    "@near-js/jsonrpc-client": "^1.5.0"
+  },
+  "devDependencies": {},
+  "keywords": [
+    "near",
+    "blockchain",
+    "bulk-payment",
+    "dao",
+    "e2e"
+  ],
+  "author": "",
+  "license": "MIT"
+}

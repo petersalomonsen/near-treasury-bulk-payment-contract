@@ -1,0 +1,87 @@
+# fly.toml - Fly.io configuration for NEAR Treasury Sandbox Test Environment
+# Deploy with: fly deploy --config sandbox/fly.toml
+#
+# This deploys a single machine with:
+# - NEAR Sandbox (port 3030)
+# - Bulk Payment API (port 8080)
+# - Sputnik DAO Indexer (port 5001)
+
+app = 'near-treasury-sandbox'
+primary_region = 'ams'
+
+[build]
+dockerfile = "Dockerfile"
+
+[env]
+# NEAR Sandbox configuration
+NEAR_RPC_URL = 'http://localhost:3030'
+
+# Bulk Payment API configuration
+BULK_PAYMENT_CONTRACT_ID = 'bulk-payment.test.near'
+API_PORT = '8080'
+
+# Sputnik Indexer configuration
+INDEXER_PORT = '5001'
+PORT = '5001'
+ROCKET_ADDRESS = '0.0.0.0'
+ROCKET_PORT = '5001'
+
+# Expose NEAR Sandbox RPC (port 3030)
+[[services]]
+internal_port = 3030
+protocol = "tcp"
+
+[[services.ports]]
+handlers = ["tls", "http"]
+port = 3030
+
+[[services.http_checks]]
+interval = "10s"
+timeout = "5s"
+grace_period = "30s"
+method = "GET"
+path = "/status"
+
+# Expose Bulk Payment API (port 8080)
+[[services]]
+internal_port = 8080
+protocol = "tcp"
+
+[[services.ports]]
+handlers = ["tls", "http"]
+port = 8080
+
+[[services.http_checks]]
+interval = "10s"
+timeout = "5s"
+grace_period = "30s"
+method = "GET"
+path = "/health"
+
+# Sputnik Indexer (port 5001) - temporarily disabled
+# TODO: Investigate why sputnik-indexer exits immediately with status 0
+# [[services]]
+# internal_port = 5001
+# protocol = "tcp"
+#
+# [[services.ports]]
+# handlers = ["tls", "http"]
+# port = 5001
+#
+# [[services.http_checks]]
+# interval = "10s"
+# timeout = "5s"
+# grace_period = "60s"
+# method = "GET"
+# path = "/health"
+
+# VM configuration
+[[vm]]
+memory = '4gb'
+cpu_kind = 'shared'
+cpus = 2
+
+# Persistent volume for sandbox state and indexer cache
+[mounts]
+source = "sandbox_data"
+destination = "/data"

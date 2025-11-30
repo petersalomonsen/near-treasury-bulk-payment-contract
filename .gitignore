@@ -1,1 +1,6 @@
 /target
+/bulk-payment-api/target
+/sandbox/sandbox-init/target
+*.wasm
+!sandbox/contracts/.gitkeep
+/e2e-tests/node_modules
