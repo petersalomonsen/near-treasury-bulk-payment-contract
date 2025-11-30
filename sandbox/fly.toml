@@ -58,22 +58,21 @@ grace_period = "30s"
 method = "GET"
 path = "/health"
 
-# Sputnik Indexer (port 5001) - temporarily disabled
-# TODO: Investigate why sputnik-indexer exits immediately with status 0
-# [[services]]
-# internal_port = 5001
-# protocol = "tcp"
-#
-# [[services.ports]]
-# handlers = ["tls", "http"]
-# port = 5001
-#
-# [[services.http_checks]]
-# interval = "10s"
-# timeout = "5s"
-# grace_period = "60s"
-# method = "GET"
-# path = "/health"
+# Sputnik Indexer (port 5001)
+[[services]]
+internal_port = 5001
+protocol = "tcp"
+
+[[services.ports]]
+handlers = ["tls", "http"]
+port = 5001
+
+[[services.http_checks]]
+interval = "10s"
+timeout = "5s"
+grace_period = "60s"
+method = "GET"
+path = "/proposals/testdao.sputnik-dao.near"
 
 # VM configuration
 [[vm]]
