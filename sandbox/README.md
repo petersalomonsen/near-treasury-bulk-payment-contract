@@ -166,6 +166,26 @@ curl -X POST https://near-treasury-sandbox.fly.dev:3030 \
   }'
 ```
 
+## Running E2E Tests
+
+### Against Local Docker Container
+
+```bash
+cd e2e-tests
+npm install
+npm test
+```
+
+### Against Fly.io Deployment
+
+```bash
+cd e2e-tests
+npm install
+SANDBOX_RPC_URL=https://near-treasury-sandbox.fly.dev:3030 \
+API_URL=https://near-treasury-sandbox.fly.dev:8080 \
+npm test
+```
+
 ## Configuration
 
 ### Environment Variables

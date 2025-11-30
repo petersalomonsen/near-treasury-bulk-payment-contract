@@ -32,7 +32,7 @@ internal_port = 3030
 protocol = "tcp"
 
 [[services.ports]]
-handlers = ["http"]
+handlers = ["tls", "http"]
 port = 3030
 
 [[services.http_checks]]
@@ -48,7 +48,7 @@ internal_port = 8080
 protocol = "tcp"
 
 [[services.ports]]
-handlers = ["http"]
+handlers = ["tls", "http"]
 port = 8080
 
 [[services.http_checks]]
@@ -58,21 +58,22 @@ grace_period = "30s"
 method = "GET"
 path = "/health"
 
-# Expose Sputnik Indexer (port 5001)
-[[services]]
-internal_port = 5001
-protocol = "tcp"
-
-[[services.ports]]
-handlers = ["http"]
-port = 5001
-
-[[services.http_checks]]
-interval = "10s"
-timeout = "5s"
-grace_period = "30s"
-method = "GET"
-path = "/health"
+# Sputnik Indexer (port 5001) - temporarily disabled
+# TODO: Investigate why sputnik-indexer exits immediately with status 0
+# [[services]]
+# internal_port = 5001
+# protocol = "tcp"
+#
+# [[services.ports]]
+# handlers = ["tls", "http"]
+# port = 5001
+#
+# [[services.http_checks]]
+# interval = "10s"
+# timeout = "5s"
+# grace_period = "60s"
+# method = "GET"
+# path = "/health"
 
 # VM configuration
 [[vm]]

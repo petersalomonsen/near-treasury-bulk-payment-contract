@@ -56,11 +56,10 @@ npm run test:docker
 cd e2e-tests
 npm install
 
-# Set environment variables for your Fly.io deployment
-export SANDBOX_RPC_URL=https://your-app.fly.dev:3030
-export API_URL=https://your-app.fly.dev:8080
-
-npm run test:fly
+# Run against the deployed Fly.io sandbox
+SANDBOX_RPC_URL=https://near-treasury-sandbox.fly.dev:3030 \
+API_URL=https://near-treasury-sandbox.fly.dev:8080 \
+npm test
 ```
 
 ### GitHub Actions
