@@ -120,6 +120,10 @@ COPY --from=contract-builder /build/target/near/near_treasury_bulk_payment_contr
 # Copy supervisord configuration
 COPY sandbox/supervisord.conf /etc/supervisor/conf.d/
 
+# Copy startup script for architecture-aware sandbox binary selection
+COPY sandbox/start-sandbox.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/start-sandbox.sh
+
 # Copy sputnikdao2.wasm if available (for sample DAO)
 COPY sandbox/contracts/ /app/contracts/
 

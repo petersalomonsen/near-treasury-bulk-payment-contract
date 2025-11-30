@@ -64,12 +64,35 @@ This binary is compiled with **x32 ABI** (x86_64 architecture with 32-bit pointe
 3. ✅ File I/O operations work correctly
 4. ❌ The NEAR sandbox binary cannot execute under Rosetta due to x32 ABI instructions
 
-## Solutions
+## Solution: Native ARM64 Support
 
-1. **Recommended for local development on Apple Silicon**: Use Fly.io deployment
-2. **Alternative**: Run only the Bulk Payment API against testnet
-3. **Full testing**: Use a native x86_64 Linux environment or Intel Mac
+NEAR provides a Linux ARM64 binary at:
+```
+https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore/Linux-aarch64/2.9.0/near-sandbox.tar.gz
+```
 
-## Testing Command Used
+The `near-sandbox-utils` crate supports overriding the download URL via the `SANDBOX_ARTIFACT_URL` environment variable. We created a wrapper script (`start-sandbox.sh`) that:
+1. Detects the CPU architecture at runtime
+2. Sets `SANDBOX_ARTIFACT_URL` to the appropriate binary (Linux-aarch64 or Linux-x86_64)
+3. Runs the sandbox-init binary
 
-Created `sandbox/Dockerfile.debug` to isolate the sandbox for investigation.
+This allows the Docker image to work natively on both:
+- **Apple Silicon (M1/M2/M3)**: Uses `linux/arm64` image with Linux-aarch64 sandbox binary
+- **Intel/AMD**: Uses `linux/amd64` image with Linux-x86_64 sandbox binary
+
+## Testing Commands
+
+Build and run natively on Apple Silicon:
+```bash
+# Build for native ARM64 (no emulation needed)
+docker build -f sandbox/Dockerfile -t near-treasury-sandbox .
+
+# Run the container
+docker run -d \
+  --name near-treasury-sandbox \
+  -p 3030:3030 \
+  -p 8080:8080 \
+  -p 5001:5001 \
+  -v sandbox_data:/data \
+  near-treasury-sandbox
+```

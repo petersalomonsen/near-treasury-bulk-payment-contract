@@ -112,8 +112,8 @@ cargo build --target wasm32-unknown-unknown --release
 Build and run a complete sandbox test environment with the contract, API, and indexer:
 
 ```bash
-# Build the Docker image for linux/amd64 platform
-docker build --platform linux/amd64 -f sandbox/Dockerfile -t near-treasury-sandbox .
+# Build the Docker image (works on both Intel and Apple Silicon)
+docker build -f sandbox/Dockerfile -t near-treasury-sandbox .
 
 # Run the sandbox with persistent storage
 docker run -d \
@@ -125,10 +125,7 @@ docker run -d \
   near-treasury-sandbox
 ```
 
-**Note**: The Docker image is built for `linux/amd64`. If you're on Apple Silicon (M1/M2/M3), you can use Colima with Rosetta emulation:
-```bash
-colima start --cpu 4 --memory 8 --arch x86_64
-```
+The Docker image automatically detects your CPU architecture and downloads the appropriate NEAR sandbox binary (Linux ARM64 or x86_64).
 
 See [sandbox/README.md](sandbox/README.md) for detailed setup and API usage documentation.
 
