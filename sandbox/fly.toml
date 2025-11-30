@@ -59,6 +59,8 @@ method = "GET"
 path = "/health"
 
 # Sputnik Indexer (port 5001)
+# Note: No health check - sputnik-indexer doesn't have a /health endpoint
+# The service responds with 404 for non-existent DAOs, which is expected behavior
 [[services]]
 internal_port = 5001
 protocol = "tcp"
@@ -66,13 +68,6 @@ protocol = "tcp"
 [[services.ports]]
 handlers = ["tls", "http"]
 port = 5001
-
-[[services.http_checks]]
-interval = "10s"
-timeout = "5s"
-grace_period = "60s"
-method = "GET"
-path = "/proposals/testdao.sputnik-dao.near"
 
 # VM configuration
 [[vm]]
