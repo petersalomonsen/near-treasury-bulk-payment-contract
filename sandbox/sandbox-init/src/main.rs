@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use near_api::{AccountId, NetworkConfig, NearToken, Signer};
+use near_gas::NearGas;
 use near_sandbox::{GenesisAccount, Sandbox, SandboxConfig};
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -266,13 +267,21 @@ async fn main() -> Result<()> {
         public_key: genesis_account.public_key.clone(),
     };
 
+    // Sputnik DAO factory account
+    let sputnik_dao_account = GenesisAccount {
+        account_id: "sputnik-dao.near".parse().unwrap(),
+        balance: NearToken::from_near(1000),
+        private_key: genesis_account.private_key.clone(),
+        public_key: genesis_account.public_key.clone(),
+    };
+
     info!("Starting NEAR sandbox...");
 
     // Configure sandbox to run on port 3031 internally
     // A socat proxy will forward 0.0.0.0:3030 -> 127.0.0.1:3031 for external access
     let config = SandboxConfig {
         rpc_port: Some(3031),
-        additional_accounts: vec![wrap_near_account, intents_account, omft_account],
+        additional_accounts: vec![wrap_near_account, intents_account, omft_account, sputnik_dao_account],
         ..Default::default()
     };
 
@@ -309,6 +318,27 @@ async fn main() -> Result<()> {
     if let Err(e) = import_contract(&network_config, &"omft.near".parse().unwrap(), "omft.near").await
     {
         error!("Failed to import omft.near: {}", e);
+    }
+
+    // Import Sputnik DAO factory from mainnet
+    if let Err(e) = import_contract(&network_config, &"sputnik-dao.near".parse().unwrap(), "sputnik-dao.near").await
+    {
+        error!("Failed to import sputnik-dao.near: {}", e);
+    } else {
+        // Initialize the DAO factory
+        info!("Initializing sputnik-dao.near factory...");
+        let sputnik_dao_id: AccountId = "sputnik-dao.near".parse().unwrap();
+        if let Err(e) = near_api::Contract(sputnik_dao_id.clone())
+            .call_function("new", serde_json::json!({}))
+            .unwrap()
+            .transaction()
+            .gas(NearGas::from_tgas(300))
+            .with_signer(sputnik_dao_id.clone(), get_genesis_signer())
+            .send_to(&network_config)
+            .await
+        {
+            error!("Failed to initialize sputnik-dao.near: {}", e);
+        }
     }
 
     // Create sub-accounts for bulk payment contract
@@ -365,6 +395,7 @@ async fn main() -> Result<()> {
     info!("  - wrap.near");
     info!("  - intents.near");
     info!("  - omft.near");
+    info!("  - sputnik-dao.near (DAO factory)");
     info!("  - {}", bulk_payment_id);
     info!("");
 

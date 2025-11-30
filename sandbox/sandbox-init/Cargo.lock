@@ -1815,6 +1815,7 @@ dependencies = [
  "anyhow",
  "base64",
  "near-api",
+ "near-gas",
  "near-sandbox",
  "reqwest",
  "serde",
