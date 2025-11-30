@@ -28,6 +28,11 @@ const { connect, keyStores, KeyPair, utils } = nearAPI;
 // Configuration
 // ============================================================================
 
+// Storage cost calculation constants (matching bulk payment contract)
+const BYTES_PER_RECORD = 216n; // AccountId (100) + amount (16) + status (~50) + overhead (~50)
+const STORAGE_COST_PER_BYTE = 10n ** 19n; // yoctoNEAR per byte
+const STORAGE_MARKUP_PERCENT = 110n; // 10% markup (110/100)
+
 const CONFIG = {
   // URLs - configurable via environment variables
   SANDBOX_RPC_URL: process.env.SANDBOX_RPC_URL || 'http://localhost:3030',
@@ -41,9 +46,10 @@ const CONFIG = {
   NUM_RECIPIENTS: parseInt(process.env.NUM_RECIPIENTS || '500', 10),
   PAYMENT_AMOUNT: process.env.PAYMENT_AMOUNT || '100000000000000000000000', // 0.1 NEAR per recipient
   
-  // Genesis account credentials (default sandbox genesis account)
-  GENESIS_ACCOUNT_ID: 'test.near',
-  GENESIS_PRIVATE_KEY: 'ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af7e2dWgNPEaiQfdJnZq1CNPp5im4Rg5b733oiMP',
+  // Genesis account credentials (default sandbox genesis account - PUBLIC TEST KEY)
+  // This is the well-known sandbox test account key, safe for testing purposes only
+  GENESIS_ACCOUNT_ID: process.env.GENESIS_ACCOUNT_ID || 'test.near',
+  GENESIS_PRIVATE_KEY: process.env.GENESIS_PRIVATE_KEY || 'ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af7e2dWgNPEaiQfdJnZq1CNPp5im4Rg5b733oiMP',
 };
 
 // ============================================================================
@@ -97,6 +103,12 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
   }
   
   const response = await fetch(url, options);
+  
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'Unknown error');
+    throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+  
   return response.json();
 }
 
@@ -272,11 +284,10 @@ async function getProposalStatus(account, daoAccountId, proposalId) {
  * Calculate storage cost for payment records
  */
 function calculateStorageCost(numRecords) {
-  // 216 bytes per record, 10^19 yoctoNEAR per byte, plus 10% markup
-  const bytesPerRecord = BigInt(216);
-  const storageCostPerByte = BigInt(10) ** BigInt(19);
-  const storageCost = bytesPerRecord * BigInt(numRecords) * storageCostPerByte;
-  const totalCost = (storageCost * BigInt(11)) / BigInt(10); // 10% markup
+  // Uses constants defined at top of file
+  const storageBytes = BYTES_PER_RECORD * BigInt(numRecords);
+  const storageCost = storageBytes * STORAGE_COST_PER_BYTE;
+  const totalCost = (storageCost * STORAGE_MARKUP_PERCENT) / 100n;
   return totalCost.toString();
 }
 
