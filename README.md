@@ -2,6 +2,8 @@
 
 NEAR smart contract for bulk payment processing - Part of NEAR Treasury
 
+📖 **[Architecture Documentation](docs/ARCHITECTURE.md)** - Full system architecture with sequence diagrams
+
 ## Overview
 
 This contract enables efficient batch payment processing on NEAR with support for:
