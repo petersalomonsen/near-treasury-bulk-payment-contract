@@ -699,7 +699,10 @@ mod tests {
     fn test_list_id(suffix: &str) -> ListId {
         // Create a valid 64-character hex string by hashing the suffix
         // For testing, we just pad with 'a' (valid hex char) to make 64 characters
-        let hex_suffix = suffix.bytes().map(|b| format!("{:02x}", b)).collect::<String>();
+        let hex_suffix = suffix
+            .bytes()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
         let padded = format!("{:a>64}", hex_suffix);
         padded[..64].to_string()
     }
@@ -773,7 +776,8 @@ mod tests {
         ];
 
         let list_id = test_list_id("1");
-        let returned_id = contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
+        let returned_id =
+            contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // Verify credits were deducted (10 - 2 = 8)
         let credits = contract.view_storage_credits(accounts(0));
@@ -1002,9 +1006,11 @@ mod tests {
 
         let list_id1 = test_list_id("multi_1");
         let list_id2 = test_list_id("multi_2");
-        
-        let returned_id1 = contract.submit_list(list_id1.clone(), "native".to_string(), payments1, None);
-        let returned_id2 = contract.submit_list(list_id2.clone(), "native".to_string(), payments2, None);
+
+        let returned_id1 =
+            contract.submit_list(list_id1.clone(), "native".to_string(), payments1, None);
+        let returned_id2 =
+            contract.submit_list(list_id2.clone(), "native".to_string(), payments2, None);
 
         assert_eq!(returned_id1, list_id1);
         assert_eq!(returned_id2, list_id2);
