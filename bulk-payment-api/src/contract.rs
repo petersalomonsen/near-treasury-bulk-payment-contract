@@ -109,12 +109,14 @@ impl BulkPaymentClient {
     /// payment list in a DAO proposal.
     pub async fn submit_list(
         &self,
+        list_id: &str,
         submitter_id: &str,
         token_id: &str,
         payments: Vec<PaymentInput>,
-    ) -> Result<u64> {
+    ) -> Result<String> {
         info!(
-            "Submitting payment list for {} with {} payments",
+            "Submitting payment list {} for {} with {} payments",
+            list_id,
             submitter_id,
             payments.len()
         );
@@ -124,6 +126,7 @@ impl BulkPaymentClient {
             .call_function(
                 "submit_list",
                 json!({
+                    "list_id": list_id,
                     "token_id": token_id,
                     "payments": payments,
                     "submitter_id": submitter_id
@@ -139,31 +142,26 @@ impl BulkPaymentClient {
             anyhow::bail!("Transaction failed: {:?}", result);
         }
 
-        // Parse the list ID from the logs (uses logs() to get logs from all receipts)
-        let list_id: u64 = result
+        // Verify the list was created by checking logs
+        let log_found = result
             .logs()
             .iter()
-            .find_map(|log| {
-                if log.starts_with("Payment list ") {
-                    log.split_whitespace()
-                        .nth(2)
-                        .and_then(|s| s.parse().ok())
-                } else {
-                    None
-                }
-            })
-            .context("Failed to parse list ID from logs")?;
+            .any(|log| log.contains(&format!("Payment list {} submitted", list_id)));
+
+        if !log_found {
+            anyhow::bail!("List submission did not produce expected log");
+        }
 
         info!("Payment list submitted with ID: {}", list_id);
-        Ok(list_id)
+        Ok(list_id.to_string())
     }
 
     /// View a payment list
-    pub async fn view_list(&self, list_ref: u64) -> Result<PaymentList> {
-        debug!("Viewing payment list: {}", list_ref);
+    pub async fn view_list(&self, list_id: &str) -> Result<PaymentList> {
+        debug!("Viewing payment list: {}", list_id);
 
         let result: PaymentList = Contract(self.contract_id.parse()?)
-            .call_function("view_list", json!({ "list_ref": list_ref }))?
+            .call_function("view_list", json!({ "list_id": list_id }))?
             .read_only()
             .fetch_from(&self.network_config)
             .await
@@ -174,11 +172,11 @@ impl BulkPaymentClient {
     }
 
     /// Approve a payment list
-    pub async fn approve_list(&self, submitter_id: &str, list_ref: u64) -> Result<()> {
-        info!("Approving payment list: {}", list_ref);
+    pub async fn approve_list(&self, submitter_id: &str, list_id: &str) -> Result<()> {
+        info!("Approving payment list: {}", list_id);
 
         // First get the list to calculate the required deposit
-        let list = self.view_list(list_ref).await?;
+        let list = self.view_list(list_id).await?;
 
         // Calculate total payment amount, returning error for invalid amounts
         let total: u128 = list
@@ -194,7 +192,7 @@ impl BulkPaymentClient {
             .sum();
 
         let result = Contract(self.contract_id.parse()?)
-            .call_function("approve_list", json!({ "list_ref": list_ref }))?
+            .call_function("approve_list", json!({ "list_id": list_id }))?
             .transaction()
             .deposit(NearToken::from_yoctonear(total))
             .with_signer(submitter_id.parse()?, self.signer.clone())
@@ -206,7 +204,7 @@ impl BulkPaymentClient {
             anyhow::bail!("Transaction failed: {:?}", result);
         }
 
-        info!("Payment list {} approved", list_ref);
+        info!("Payment list {} approved", list_id);
         Ok(())
     }
 
@@ -214,19 +212,19 @@ impl BulkPaymentClient {
     pub async fn payout_batch(
         &self,
         caller_id: &str,
-        list_ref: u64,
+        list_id: &str,
         max_payments: Option<u64>,
     ) -> Result<u64> {
         debug!(
             "Executing payout batch for list: {} with max_payments: {:?}",
-            list_ref, max_payments
+            list_id, max_payments
         );
 
         let result = Contract(self.contract_id.parse()?)
             .call_function(
                 "payout_batch",
                 json!({
-                    "list_ref": list_ref,
+                    "list_id": list_id,
                     "max_payments": max_payments
                 }),
             )?
@@ -261,8 +259,8 @@ impl BulkPaymentClient {
     }
 
     /// Check if a list has pending payments
-    pub async fn has_pending_payments(&self, list_ref: u64) -> Result<bool> {
-        let list = self.view_list(list_ref).await?;
+    pub async fn has_pending_payments(&self, list_id: &str) -> Result<bool> {
+        let list = self.view_list(list_id).await?;
         Ok(list
             .payments
             .iter()
@@ -270,7 +268,7 @@ impl BulkPaymentClient {
     }
 
     /// Get all approved lists that have pending payments
-    pub async fn get_approved_lists_with_pending(&self) -> Result<Vec<u64>> {
+    pub async fn get_approved_lists_with_pending(&self) -> Result<Vec<String>> {
         // Note: In a production implementation, this would query the contract
         // for a list of approved lists. For now, we'll track them in the worker.
         warn!("get_approved_lists_with_pending not fully implemented - requires contract enumeration");

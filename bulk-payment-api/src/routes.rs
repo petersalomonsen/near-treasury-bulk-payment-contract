@@ -22,12 +22,13 @@ use crate::contract::{BulkPaymentClient, ListStatus, PaymentInput, PaymentList, 
 pub struct AppState {
     pub client: BulkPaymentClient,
     /// Track submitted lists for the worker to process
-    pub pending_lists: Arc<RwLock<Vec<u64>>>,
+    pub pending_lists: Arc<RwLock<Vec<String>>>,
 }
 
 /// Request body for submitting a payment list
 #[derive(Debug, Deserialize)]
 pub struct SubmitListRequest {
+    pub list_id: String,
     pub submitter_id: String,
     pub token_id: String,
     pub payments: Vec<PaymentInput>,
@@ -37,7 +38,7 @@ pub struct SubmitListRequest {
 #[derive(Debug, Serialize)]
 pub struct SubmitListResponse {
     pub success: bool,
-    pub list_id: Option<u64>,
+    pub list_id: Option<String>,
     pub error: Option<String>,
 }
 
@@ -52,7 +53,7 @@ pub struct ListResponse {
 /// View-friendly payment list
 #[derive(Debug, Serialize)]
 pub struct PaymentListView {
-    pub id: u64,
+    pub id: String,
     pub token_id: String,
     pub submitter: String,
     pub status: String,
@@ -71,8 +72,8 @@ pub struct HealthResponse {
     pub version: &'static str,
 }
 
-impl From<(u64, PaymentList)> for PaymentListView {
-    fn from((id, list): (u64, PaymentList)) -> Self {
+impl From<(String, PaymentList)> for PaymentListView {
+    fn from((id, list): (String, PaymentList)) -> Self {
         let status = match list.status {
             ListStatus::Pending => "Pending",
             ListStatus::Approved => "Approved",
@@ -133,14 +134,15 @@ async fn submit_list(
     Json(request): Json<SubmitListRequest>,
 ) -> impl IntoResponse {
     info!(
-        "Received submit-list request from {} with {} payments",
+        "Received submit-list request from {} with {} payments, list_id: {}",
         request.submitter_id,
-        request.payments.len()
+        request.payments.len(),
+        request.list_id
     );
 
     match state
         .client
-        .submit_list(&request.submitter_id, &request.token_id, request.payments)
+        .submit_list(&request.list_id, &request.submitter_id, &request.token_id, request.payments)
         .await
     {
         Ok(list_id) => {
@@ -148,7 +150,7 @@ async fn submit_list(
             {
                 let mut pending = state.pending_lists.write().await;
                 if !pending.contains(&list_id) {
-                    pending.push(list_id);
+                    pending.push(list_id.clone());
                 }
             }
 
@@ -176,10 +178,10 @@ async fn submit_list(
 }
 
 /// Get payment list status
-async fn get_list(State(state): State<AppState>, Path(id): Path<u64>) -> impl IntoResponse {
+async fn get_list(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     info!("Received get-list request for list {}", id);
 
-    match state.client.view_list(id).await {
+    match state.client.view_list(&id).await {
         Ok(list) => (
             StatusCode::OK,
             Json(ListResponse {

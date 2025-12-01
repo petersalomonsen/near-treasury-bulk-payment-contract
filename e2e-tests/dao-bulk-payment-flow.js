@@ -21,6 +21,8 @@
  * - Fly.io: SANDBOX_RPC_URL=https://your-app.fly.dev:3030 API_URL=https://your-app.fly.dev:8080 npm run test:fly
  */
 
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import * as nearAPI from 'near-api-js';
 const { connect, keyStores, KeyPair, utils } = nearAPI;
 
@@ -78,6 +80,15 @@ function generateImplicitAccountId(index) {
   // Generate a deterministic hex string based on index
   const hex = index.toString(16).padStart(8, '0');
   return hex.repeat(8); // 64 characters
+}
+
+/**
+ * Generate a valid list_id (64-char hex-encoded SHA-256 hash)
+ * The contract validates that list_id is exactly 64 hex characters [0-9a-f]
+ */
+function generateListId(submitterId, tokenId, payments) {
+  const data = JSON.stringify({ submitter: submitterId, token_id: tokenId, payments });
+  return createHash('sha256').update(data).digest('hex');
 }
 
 /**
@@ -299,7 +310,7 @@ async function viewPaymentList(account, listId) {
   const list = await account.viewFunction({
     contractId: CONFIG.BULK_PAYMENT_CONTRACT_ID,
     methodName: 'view_list',
-    args: { list_ref: listId },
+    args: { list_id: listId },
   });
   return list;
 }
@@ -336,10 +347,10 @@ async function checkRecipientBalances(near, recipients) {
 }
 
 // ============================================================================
-// Main Test Flow
+// Main Test Flow (Top-Level Await)
 // ============================================================================
 
-async function runTest() {
+try {
   console.log('🚀 Starting DAO Bulk Payment E2E Test');
   console.log('=====================================');
   console.log(`Sandbox RPC: ${CONFIG.SANDBOX_RPC_URL}`);
@@ -348,178 +359,180 @@ async function runTest() {
   console.log(`Bulk Payment Contract: ${CONFIG.BULK_PAYMENT_CONTRACT_ID}`);
   console.log(`Number of Recipients: ${CONFIG.NUM_RECIPIENTS}`);
   console.log('=====================================\n');
-  
-  // Step 1: Setup NEAR connection
-  console.log('📡 Connecting to NEAR sandbox...');
-  const { near, account, keyStore } = await setupNearConnection();
-  console.log(`✅ Connected as: ${account.accountId}`);
-  
-  // Step 2: Check API health
-  console.log('\n🏥 Checking API health...');
-  const health = await apiRequest('/health');
-  if (health.status !== 'healthy') {
-    throw new Error('Bulk Payment API is not healthy');
-  }
-  console.log(`✅ API is healthy: ${JSON.stringify(health)}`);
-  
-  // Step 3: Create DAO
-  const daoName = 'testdao';
-  const daoAccountId = await createDAO(account, daoName, account.accountId);
-  
-  // Add DAO key to keystore (uses same key as genesis for testing)
-  const keyPair = KeyPair.fromString(CONFIG.GENESIS_PRIVATE_KEY);
-  await keyStore.setKey('sandbox', daoAccountId, keyPair);
-  const daoAccount = await near.account(daoAccountId);
-  
-  // Step 4: Create proposal to buy_storage
-  const storageCost = calculateStorageCost(CONFIG.NUM_RECIPIENTS);
-  console.log(`\n💰 Storage cost for ${CONFIG.NUM_RECIPIENTS} records: ${formatNEAR(storageCost)} NEAR`);
-  
-  const buyStorageProposalId = await createProposal(
-    account,
-    daoAccountId,
-    `Buy storage for ${CONFIG.NUM_RECIPIENTS} payment records`,
-    CONFIG.BULK_PAYMENT_CONTRACT_ID,
-    'buy_storage',
-    { num_records: CONFIG.NUM_RECIPIENTS },
-    storageCost
-  );
-  
-  // Step 5: Approve buy_storage proposal
-  await approveProposal(account, daoAccountId, buyStorageProposalId);
-  
-  // Wait for execution
-  await sleep(2000);
-  
-  // Step 6: Generate payment list
-  console.log(`\n📋 Generating payment list with ${CONFIG.NUM_RECIPIENTS} recipients...`);
-  const payments = [];
-  let totalPaymentAmount = BigInt(0);
-  
-  for (let i = 0; i < CONFIG.NUM_RECIPIENTS; i++) {
-    const recipient = generateImplicitAccountId(i);
-    payments.push({
-      recipient,
-      amount: CONFIG.PAYMENT_AMOUNT,
-    });
-    totalPaymentAmount += BigInt(CONFIG.PAYMENT_AMOUNT);
-  }
-  
-  console.log(`✅ Generated ${payments.length} payments`);
-  console.log(`💰 Total payment amount: ${formatNEAR(totalPaymentAmount.toString())} NEAR`);
-  
-  // Step 7: Submit payment list via API
-  console.log('\n📤 Submitting payment list via API...');
-  const submitResponse = await apiRequest('/submit-list', 'POST', {
-    submitter_id: daoAccountId,
-    token_id: 'native',
-    payments,
+
+// Step 1: Setup NEAR connection
+console.log('📡 Connecting to NEAR sandbox...');
+const { near, account, keyStore } = await setupNearConnection();
+console.log(`✅ Connected as: ${account.accountId}`);
+
+// Step 2: Check API health
+console.log('\n🏥 Checking API health...');
+const health = await apiRequest('/health');
+assert.equal(health.status, 'healthy', 'API must be healthy');
+console.log(`✅ API is healthy: ${JSON.stringify(health)}`);
+
+// Step 3: Create DAO
+const daoName = 'testdao';
+const daoAccountId = await createDAO(account, daoName, account.accountId);
+
+// Add DAO key to keystore (uses same key as genesis for testing)
+const keyPair = KeyPair.fromString(CONFIG.GENESIS_PRIVATE_KEY);
+await keyStore.setKey('sandbox', daoAccountId, keyPair);
+const daoAccount = await near.account(daoAccountId);
+
+// Step 4: Create proposal to buy_storage
+const storageCost = calculateStorageCost(CONFIG.NUM_RECIPIENTS);
+console.log(`\n💰 Storage cost for ${CONFIG.NUM_RECIPIENTS} records: ${formatNEAR(storageCost)} NEAR`);
+
+const buyStorageProposalId = await createProposal(
+  account,
+  daoAccountId,
+  `Buy storage for ${CONFIG.NUM_RECIPIENTS} payment records`,
+  CONFIG.BULK_PAYMENT_CONTRACT_ID,
+  'buy_storage',
+  { num_records: CONFIG.NUM_RECIPIENTS },
+  storageCost
+);
+
+// Step 5: Approve buy_storage proposal
+await approveProposal(account, daoAccountId, buyStorageProposalId);
+
+// Wait for execution
+await sleep(2000);
+
+// Step 6: Generate payment list
+console.log(`\n📋 Generating payment list with ${CONFIG.NUM_RECIPIENTS} recipients...`);
+const payments = [];
+let totalPaymentAmount = BigInt(0);
+
+for (let i = 0; i < CONFIG.NUM_RECIPIENTS; i++) {
+  const recipient = generateImplicitAccountId(i);
+  payments.push({
+    recipient,
+    amount: CONFIG.PAYMENT_AMOUNT,
   });
+  totalPaymentAmount += BigInt(CONFIG.PAYMENT_AMOUNT);
+}
+
+console.log(`✅ Generated ${payments.length} payments`);
+console.log(`💰 Total payment amount: ${formatNEAR(totalPaymentAmount.toString())} NEAR`);
+
+// Step 7: Generate list_id (64-char hex SHA-256 hash)
+const listId = generateListId(daoAccountId, 'native', payments);
+console.log(`\n🔑 Generated list_id: ${listId}`);
+assert.equal(listId.length, 64, 'list_id must be 64 characters');
+assert.match(listId, /^[0-9a-f]{64}$/, 'list_id must be hex-encoded');
+
+// Step 8: Submit payment list via API
+console.log('\n📤 Submitting payment list via API...');
+const submitResponse = await apiRequest('/submit-list', 'POST', {
+  list_id: listId,
+  submitter_id: daoAccountId,
+  token_id: 'native',
+  payments,
+});
+
+assert.equal(submitResponse.success, true, `Submit must succeed: ${submitResponse.error}`);
+assert.equal(submitResponse.list_id, listId, 'Returned list_id must match submitted');
+console.log(`✅ Payment list submitted with ID: ${listId}`);
+
+// Step 9: Create proposal to approve the list
+const approveListProposalId = await createProposal(
+  account,
+  daoAccountId,
+  `Approve payment list ${listId} with ${CONFIG.NUM_RECIPIENTS} recipients`,
+  CONFIG.BULK_PAYMENT_CONTRACT_ID,
+  'approve_list',
+  { list_id: listId },
+  totalPaymentAmount.toString()
+);
+
+// Step 10: Approve the payment list proposal
+await approveProposal(account, daoAccountId, approveListProposalId);
+
+// Wait for execution
+await sleep(2000);
+
+// Step 11: Verify list is approved
+console.log('\n🔍 Verifying payment list status...');
+const listStatus = await viewPaymentList(account, listId);
+console.log(`📊 List status: ${listStatus.status}`);
+console.log(`📊 Total payments: ${listStatus.payments.length}`);
+
+assert.equal(listStatus.status, 'Approved', `Payment list must be Approved, got: ${listStatus.status}`);
+assert.equal(listStatus.payments.length, CONFIG.NUM_RECIPIENTS, `Must have ${CONFIG.NUM_RECIPIENTS} payments`);
+
+// Step 12: Wait for payout processing (background worker processes approved lists)
+console.log('\n⏳ Waiting for payout processing...');
+let allPaid = false;
+let attempts = 0;
+const maxAttempts = 60; // 5 minutes at 5-second intervals
+
+while (!allPaid && attempts < maxAttempts) {
+  await sleep(5000);
+  attempts++;
   
-  if (!submitResponse.success) {
-    throw new Error(`Failed to submit payment list: ${submitResponse.error}`);
-  }
+  const currentStatus = await apiRequest(`/list/${listId}`);
+  assert.equal(currentStatus.success, true, `Must be able to get list status: ${currentStatus.error}`);
   
-  const listId = submitResponse.list_id;
-  console.log(`✅ Payment list submitted with ID: ${listId}`);
+  const { list } = currentStatus;
+  const progress = ((list.paid_payments / list.total_payments) * 100).toFixed(1);
+  console.log(`📊 Progress: ${list.paid_payments}/${list.total_payments} (${progress}%)`);
   
-  // Step 8: Create proposal to approve the list
-  const approveListProposalId = await createProposal(
-    account,
-    daoAccountId,
-    `Approve payment list ${listId} with ${CONFIG.NUM_RECIPIENTS} recipients`,
-    CONFIG.BULK_PAYMENT_CONTRACT_ID,
-    'approve_list',
-    { list_ref: listId },
-    totalPaymentAmount.toString()
-  );
-  
-  // Step 9: Approve the payment list proposal
-  await approveProposal(account, daoAccountId, approveListProposalId);
-  
-  // Wait for execution
-  await sleep(2000);
-  
-  // Step 10: Verify list is approved
-  console.log('\n🔍 Verifying payment list status...');
-  const listStatus = await viewPaymentList(account, listId);
-  console.log(`📊 List status: ${listStatus.status}`);
-  console.log(`📊 Total payments: ${listStatus.payments.length}`);
-  
-  if (listStatus.status !== 'Approved') {
-    throw new Error(`Payment list is not approved: ${listStatus.status}`);
-  }
-  
-  // Step 11: Wait for payout processing (background worker processes approved lists)
-  console.log('\n⏳ Waiting for payout processing...');
-  let allPaid = false;
-  let attempts = 0;
-  const maxAttempts = 60; // 5 minutes at 5-second intervals
-  
-  while (!allPaid && attempts < maxAttempts) {
-    await sleep(5000);
-    attempts++;
-    
-    const currentStatus = await apiRequest(`/list/${listId}`);
-    if (!currentStatus.success) {
-      console.log(`⚠️ Failed to get list status: ${currentStatus.error}`);
-      continue;
-    }
-    
-    const { list } = currentStatus;
-    const progress = ((list.paid_payments / list.total_payments) * 100).toFixed(1);
-    console.log(`📊 Progress: ${list.paid_payments}/${list.total_payments} (${progress}%)`);
-    
-    if (list.pending_payments === 0 && list.failed_payments === 0) {
-      allPaid = true;
-    }
-  }
-  
-  if (!allPaid) {
-    console.log('⚠️ Not all payments completed within timeout');
-  }
-  
-  // Step 12: Verify recipient balances
-  console.log('\n🔍 Verifying recipient balances...');
-  const sampleRecipients = payments.slice(0, 10); // Check first 10 recipients
-  const balances = await checkRecipientBalances(near, sampleRecipients);
-  
-  let successCount = 0;
-  for (const balance of balances) {
-    if (balance.received) {
-      successCount++;
-      console.log(`✅ ${balance.recipient.substring(0, 16)}...: ${formatNEAR(balance.actual)} NEAR`);
-    } else {
-      console.log(`❌ ${balance.recipient.substring(0, 16)}...: ${formatNEAR(balance.actual)} NEAR (expected ${formatNEAR(balance.expected)})`);
-    }
-  }
-  
-  // Final summary
-  console.log('\n=====================================');
-  console.log('📊 Test Summary');
-  console.log('=====================================');
-  console.log(`DAO Created: ${daoAccountId}`);
-  console.log(`Payment List ID: ${listId}`);
-  console.log(`Total Recipients: ${CONFIG.NUM_RECIPIENTS}`);
-  console.log(`Sample Recipients Verified: ${successCount}/${sampleRecipients.length}`);
-  
-  const finalStatus = await viewPaymentList(account, listId);
-  console.log(`Paid: ${finalStatus.payments.filter(p => p.status === 'Paid').length}`);
-  console.log(`Pending: ${finalStatus.payments.filter(p => p.status === 'Pending').length}`);
-  console.log(`Failed: ${finalStatus.payments.filter(p => p.status && p.status.Failed).length}`);
-  console.log('=====================================\n');
-  
-  if (successCount === sampleRecipients.length) {
-    console.log('🎉 Test PASSED: All sample recipients received their tokens!');
-    process.exit(0);
-  } else {
-    console.log('❌ Test FAILED: Some recipients did not receive their tokens');
-    process.exit(1);
+  if (list.pending_payments === 0 && list.failed_payments === 0) {
+    allPaid = true;
   }
 }
 
-// Run the test
-runTest().catch((error) => {
-  console.error('❌ Test failed with error:', error);
+assert.equal(allPaid, true, 'All payments must complete within timeout');
+
+// Step 13: Verify recipient balances
+console.log('\n🔍 Verifying recipient balances...');
+const sampleRecipients = payments.slice(0, 10); // Check first 10 recipients
+const balances = await checkRecipientBalances(near, sampleRecipients);
+
+let successCount = 0;
+for (const balance of balances) {
+  if (balance.received) {
+    successCount++;
+    console.log(`✅ ${balance.recipient.substring(0, 16)}...: ${formatNEAR(balance.actual)} NEAR`);
+  } else {
+    console.log(`❌ ${balance.recipient.substring(0, 16)}...: ${formatNEAR(balance.actual)} NEAR (expected ${formatNEAR(balance.expected)})`);
+  }
+}
+
+// Step 14: Final verification
+console.log('\n=====================================');
+console.log('📊 Test Summary');
+console.log('=====================================');
+console.log(`DAO Created: ${daoAccountId}`);
+console.log(`Payment List ID: ${listId}`);
+console.log(`Total Recipients: ${CONFIG.NUM_RECIPIENTS}`);
+console.log(`Sample Recipients Verified: ${successCount}/${sampleRecipients.length}`);
+
+const finalStatus = await viewPaymentList(account, listId);
+const paidCount = finalStatus.payments.filter(p => p.status === 'Paid').length;
+const pendingCount = finalStatus.payments.filter(p => p.status === 'Pending').length;
+const failedCount = finalStatus.payments.filter(p => p.status && p.status.Failed).length;
+
+console.log(`Paid: ${paidCount}`);
+console.log(`Pending: ${pendingCount}`);
+console.log(`Failed: ${failedCount}`);
+console.log('=====================================\n');
+
+// Hard assertions
+assert.equal(paidCount, CONFIG.NUM_RECIPIENTS, `All ${CONFIG.NUM_RECIPIENTS} payments must be Paid`);
+assert.equal(pendingCount, 0, 'No payments should be Pending');
+assert.equal(failedCount, 0, 'No payments should be Failed');
+assert.equal(successCount, sampleRecipients.length, 'All sample recipients must have received their tokens');
+
+console.log('🎉 Test PASSED: All payments completed successfully!');
+process.exit(0);
+
+} catch (error) {
+  console.error('❌ Test FAILED:', error.message);
+  if (error.stack) {
+    console.error(error.stack);
+  }
   process.exit(1);
-});
+}

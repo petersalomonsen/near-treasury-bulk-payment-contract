@@ -4,6 +4,13 @@
 use base64::Engine;
 use near_sdk::{serde_json::json, AccountId, NearToken};
 
+/// Generate a valid list_id (64-character hex string) for testing
+/// Uses a simple deterministic approach: pads the suffix with 'a' characters
+fn test_list_id(suffix: &str) -> String {
+    let hex_suffix: String = suffix.bytes().map(|b| format!("{:02x}", b)).collect();
+    format!("{:a>64}", hex_suffix)[..64].to_string()
+}
+
 fn get_genesis_signer() -> std::sync::Arc<near_api::Signer> {
     near_api::Signer::new(near_api::Signer::from_secret_key(
         near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY
@@ -278,10 +285,12 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
         }),
     ];
 
+    let list_id = test_list_id("submit_approve_test");
     let submit_result = near_api::Contract(contract_id.clone())
         .call_function(
             "submit_list",
             json!({
+                "list_id": list_id,
                 "token_id": "native",
                 "payments": payments
             }),
@@ -294,8 +303,6 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
         .unwrap();
 
     submit_result.assert_success();
-    // List IDs start from 0
-    let list_id: u64 = 0;
 
     // Verify storage credits were deducted
     let credits: NearToken = near_api::Contract(contract_id.clone())
@@ -316,7 +323,7 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
     // Approve the list with exact deposit
     let total_amount = NearToken::from_yoctonear(3_000_000_000_000_000_000_000_000); // 3 NEAR
     near_api::Contract(contract_id.clone())
-        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .call_function("approve_list", json!({ "list_id": list_id }))
         .unwrap()
         .transaction()
         .deposit(total_amount)
@@ -328,7 +335,7 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
 
     // View the list to verify status
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
+        .call_function("view_list", json!({ "list_id": list_id }))
         .unwrap()
         .read_only()
         .fetch_from(&network_config)
@@ -403,10 +410,12 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Submit large payment list
+    let list_id = test_list_id("batch_processing_test");
     let submit_result = near_api::Contract(contract_id.clone())
         .call_function(
             "submit_list",
             json!({
+                "list_id": list_id,
                 "token_id": "native",
                 "payments": payments
             }),
@@ -419,8 +428,6 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
 
     submit_result.assert_success();
-    // List IDs start from 0 and increment
-    let list_id: u64 = 0;
 
     // Approve the list with exact total amount
     let total_amount = NearToken::from_yoctonear(total_amount_yocto);
@@ -435,7 +442,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .amount;
 
     near_api::Contract(contract_id.clone())
-        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .call_function("approve_list", json!({ "list_id": list_id }))
         .unwrap()
         .transaction()
         .deposit(total_amount)
@@ -450,7 +457,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .call_function(
             "payout_batch",
             json!({
-                "list_ref": list_id,
+                "list_id": list_id,
                 "max_payments": 100
             }),
         )
@@ -468,7 +475,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .call_function(
             "payout_batch",
             json!({
-                "list_ref": list_id,
+                "list_id": list_id,
                 "max_payments": 100
             }),
         )
@@ -486,7 +493,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .call_function(
             "payout_batch",
             json!({
-                "list_ref": list_id,
+                "list_id": list_id,
                 "max_payments": 100
             }),
         )
@@ -543,7 +550,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify all payments are marked as Paid
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
+        .call_function("view_list", json!({ "list_id": list_id }))
         .unwrap()
         .read_only()
         .fetch_from(&network_config)
@@ -691,10 +698,12 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         }));
     }
 
+    let list_id = test_list_id("ft_payment_test");
     let submit_result = near_api::Contract(contract_id.clone())
         .call_function(
             "submit_list",
             json!({
+                "list_id": list_id,
                 "token_id": wrap_near_id.to_string(),
                 "payments": payments
             }),
@@ -707,7 +716,6 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap();
 
     submit_result.assert_success();
-    let list_id: u64 = 0;
 
     // Register contract account with wrap.near to receive FT transfers
     near_api::Contract(wrap_near_id.clone())
@@ -736,7 +744,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             json!({
                 "receiver_id": contract_id.to_string(),
                 "amount": total_amount_str,
-                "msg": list_id.to_string()
+                "msg": list_id.clone()
             }),
         )
         .unwrap()
@@ -751,7 +759,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
 
     // Verify list is approved
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
+        .call_function("view_list", json!({ "list_id": list_id }))
         .unwrap()
         .read_only()
         .fetch_from(&network_config)
@@ -771,7 +779,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         near_api::Contract(contract_id.clone())
             .call_function(
                 "payout_batch",
-                json!({ "list_ref": list_id, "max_payments": 5 }),
+                json!({ "list_id": list_id, "max_payments": 5 }),
             )
             .unwrap()
             .transaction()
@@ -815,7 +823,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
 
     // Verify all payments are marked as Paid
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
+        .call_function("view_list", json!({ "list_id": list_id }))
         .unwrap()
         .read_only()
         .fetch_from(&network_config)
@@ -893,10 +901,12 @@ async fn test_reject_pending_list() -> Result<(), Box<dyn std::error::Error>> {
         "amount": "1000000000000000000000000"
     })];
 
+    let list_id = test_list_id("reject_pending_test");
     near_api::Contract(contract_id.clone())
         .call_function(
             "submit_list",
             json!({
+                "list_id": list_id,
                 "token_id": "native",
                 "payments": payments
             }),
@@ -909,12 +919,9 @@ async fn test_reject_pending_list() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .assert_success();
 
-    // List IDs start from 0 and increment
-    let list_id: u64 = 0;
-
     // Reject the pending list
     near_api::Contract(contract_id.clone())
-        .call_function("reject_list", json!({ "list_ref": list_id }))
+        .call_function("reject_list", json!({ "list_id": list_id }))
         .unwrap()
         .transaction()
         .with_signer(user_id.clone(), user_signer.clone())
@@ -925,7 +932,7 @@ async fn test_reject_pending_list() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify list is rejected
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))
+        .call_function("view_list", json!({ "list_id": list_id }))
         .unwrap()
         .read_only()
         .fetch_from(&network_config)
@@ -1086,10 +1093,12 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
         "amount": "1000000000000000000000000"
     })];
 
+    let list_id = test_list_id("unauthorized_ops_test");
     let submit_result = near_api::Contract(contract_id.clone())
         .call_function(
             "submit_list",
             json!({
+                "list_id": list_id,
                 "token_id": "native",
                 "payments": payments
             }),
@@ -1102,13 +1111,11 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
         .unwrap();
 
     submit_result.assert_success();
-    // List IDs start from 0 and increment
-    let list_id: u64 = 0;
 
     // Attacker tries to approve the list (should fail)
     let total_amount = NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000);
     let result = near_api::Contract(contract_id.clone())
-        .call_function("approve_list", json!({ "list_ref": list_id }))
+        .call_function("approve_list", json!({ "list_id": list_id }))
         .unwrap()
         .transaction()
         .deposit(total_amount)
@@ -1533,10 +1540,12 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // Token ID format for intents: full multi-token ID "nep141:btc.omft.near"
     let token_id = "nep141:btc.omft.near".to_string();
 
+    let list_id = test_list_id("btc_intents_payment_test");
     let submit_result = near_api::Contract(contract_id.clone())
         .call_function(
             "submit_list",
             json!({
+                "list_id": list_id,
                 "token_id": token_id,
                 "payments": payments
             }),
@@ -1547,7 +1556,6 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .await?;
 
     submit_result.assert_success();
-    let list_id: u64 = 0;
 
     println!("✓ Payment list submitted with ID: {}", list_id);
 
@@ -1593,7 +1601,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
 
     // Verify list is still Pending
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))?
+        .call_function("view_list", json!({ "list_id": list_id }))?
         .read_only()
         .fetch_from(&network_config)
         .await?
@@ -1639,7 +1647,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
 
     // Verify list is Approved
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))?
+        .call_function("view_list", json!({ "list_id": list_id }))?
         .read_only()
         .fetch_from(&network_config)
         .await?
@@ -1711,7 +1719,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             .call_function(
                 "payout_batch",
                 json!({
-                    "list_ref": list_id,
+                    "list_id": list_id,
                     "max_payments": batch_size
                 }),
             )?
@@ -1863,7 +1871,7 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     println!("\n--- VERIFYING: Payment records and BTC addresses ---");
 
     let list: serde_json::Value = near_api::Contract(contract_id.clone())
-        .call_function("view_list", json!({ "list_ref": list_id }))?
+        .call_function("view_list", json!({ "list_id": list_id }))?
         .read_only()
         .fetch_from(&network_config)
         .await?

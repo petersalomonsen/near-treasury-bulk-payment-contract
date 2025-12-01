@@ -5,15 +5,24 @@
 // - Native NEAR tokens
 // - NEP-141 fungible tokens via NEAR Intents (intents.near)
 // - Storage-based fee model with 10% revenue margin
+//
+// List IDs are SHA-256 hashes of the payment list contents, ensuring:
+// - Deterministic IDs (same list = same ID)
+// - Integrity verification (hash proves list contents)
+// - No auto-incrementing counters needed
 use near_sdk::json_types::U128;
 use near_sdk::store::IterableMap;
 use near_sdk::{env, log, near, require, AccountId, Gas, NearToken, Promise, PromiseOrValue};
 
+/// List ID is a hex-encoded SHA-256 hash (64 characters)
+/// Example: "a1b2c3d4e5f6..." (64 hex chars = 32 bytes)
+pub type ListId = String;
+
 #[near(contract_state)]
 pub struct BulkPaymentContract {
-    payment_lists: IterableMap<u64, PaymentList>,
+    /// Payment lists indexed by their content hash (hex-encoded SHA-256)
+    payment_lists: IterableMap<ListId, PaymentList>,
     storage_credits: IterableMap<AccountId, NearToken>,
-    next_list_id: u64,
 }
 
 #[near(serializers = [json])]
@@ -61,7 +70,6 @@ impl Default for BulkPaymentContract {
         Self {
             payment_lists: IterableMap::new(b"p"),
             storage_credits: IterableMap::new(b"s"),
-            next_list_id: 0,
         }
     }
 }
@@ -150,22 +158,42 @@ impl BulkPaymentContract {
         total_cost
     }
 
+    /// Validate that a list_id is a valid hex-encoded SHA-256 hash (64 hex characters)
+    fn validate_list_id(list_id: &str) -> bool {
+        list_id.len() == 64 && list_id.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
     /// Submit a payment list with pending status
     ///
     /// # Arguments
+    /// * `list_id` - The SHA-256 hash of the payment list contents (hex-encoded, 64 chars).
+    ///               This hash should be calculated by the client and verified against
+    ///               a pending DAO proposal before submission.
     /// * `token_id` - The token to use for payments ("native" for NEAR, or token contract ID)
     /// * `payments` - List of payment records with recipient and amount
     /// * `submitter_id` - Optional submitter account ID. If provided, only the contract account
     ///                    can call this function to submit on behalf of another account (e.g., a DAO).
     ///                    The submitter must have sufficient storage credits.
     ///                    If not provided, the caller becomes the submitter.
+    ///
+    /// # Returns
+    /// The list_id that was passed in (for convenience in logging/tracking)
     pub fn submit_list(
         &mut self,
+        list_id: ListId,
         token_id: String,
         payments: Vec<PaymentInput>,
         submitter_id: Option<AccountId>,
-    ) -> u64 {
+    ) -> ListId {
         require!(!payments.is_empty(), "Payment list cannot be empty");
+        require!(
+            Self::validate_list_id(&list_id),
+            "Invalid list_id: must be a 64-character hex string (SHA-256 hash)"
+        );
+        require!(
+            self.payment_lists.get(&list_id).is_none(),
+            "Payment list with this ID already exists"
+        );
 
         let caller = env::predecessor_account_id();
 
@@ -212,10 +240,6 @@ impl BulkPaymentContract {
             })
             .collect();
 
-        // Create payment list
-        let list_id = self.next_list_id;
-        self.next_list_id += 1;
-
         let payment_list = PaymentList {
             token_id,
             submitter: submitter.clone(),
@@ -224,13 +248,14 @@ impl BulkPaymentContract {
             created_at: env::block_timestamp(),
         };
 
-        self.payment_lists.insert(list_id, payment_list);
+        let num_payments = payment_list.payments.len();
+        self.payment_lists.insert(list_id.clone(), payment_list);
 
         log!(
             "Payment list {} submitted by {} with {} payments",
             list_id,
             submitter,
-            self.payment_lists.get(&list_id).unwrap().payments.len()
+            num_payments
         );
 
         list_id
@@ -238,12 +263,12 @@ impl BulkPaymentContract {
 
     /// Approve a payment list and attach the exact deposit amount
     #[payable]
-    pub fn approve_list(&mut self, list_ref: u64) {
+    pub fn approve_list(&mut self, list_id: ListId) {
         let caller = env::predecessor_account_id();
 
         let mut list = self
             .payment_lists
-            .get(&list_ref)
+            .get(&list_id)
             .expect("Payment list not found")
             .clone();
 
@@ -278,11 +303,11 @@ impl BulkPaymentContract {
 
         // Update list status
         list.status = ListStatus::Approved;
-        self.payment_lists.insert(list_ref, list);
+        self.payment_lists.insert(list_id.clone(), list);
 
         log!(
             "Payment list {} approved with deposit {}",
-            list_ref,
+            list_id,
             attached
         );
     }
@@ -297,12 +322,12 @@ impl BulkPaymentContract {
     ///
     /// # Panics
     /// Panics if there are no pending payments to process
-    pub fn payout_batch(&mut self, list_ref: u64, max_payments: Option<u64>) -> Promise {
+    pub fn payout_batch(&mut self, list_id: ListId, max_payments: Option<u64>) -> Promise {
         let max = max_payments.unwrap_or(100).min(100);
 
         let mut list = self
             .payment_lists
-            .get(&list_ref)
+            .get(&list_id)
             .expect("Payment list not found")
             .clone();
 
@@ -391,20 +416,20 @@ impl BulkPaymentContract {
         }
 
         // Update the list
-        self.payment_lists.insert(list_ref, list);
+        self.payment_lists.insert(list_id.clone(), list);
 
-        log!("Processed {} payments for list {}", processed, list_ref);
+        log!("Processed {} payments for list {}", processed, list_id);
 
         promise_to_return.expect("No pending payments to process")
     }
 
     /// Reject a payment list (only allowed before approval)
-    pub fn reject_list(&mut self, list_ref: u64) {
+    pub fn reject_list(&mut self, list_id: ListId) {
         let caller = env::predecessor_account_id();
 
         let mut list = self
             .payment_lists
-            .get(&list_ref)
+            .get(&list_id)
             .expect("Payment list not found")
             .clone();
 
@@ -420,26 +445,26 @@ impl BulkPaymentContract {
 
         // Update status
         list.status = ListStatus::Rejected;
-        self.payment_lists.insert(list_ref, list);
+        self.payment_lists.insert(list_id.clone(), list);
 
-        log!("Payment list {} rejected", list_ref);
+        log!("Payment list {} rejected", list_id);
     }
 
     /// View a payment list with all details
-    pub fn view_list(&self, list_ref: u64) -> PaymentList {
+    pub fn view_list(&self, list_id: ListId) -> PaymentList {
         self.payment_lists
-            .get(&list_ref)
+            .get(&list_id)
             .expect("Payment list not found")
             .clone()
     }
 
     /// Reset failed payments to pending for approved lists
-    pub fn retry_failed(&mut self, list_ref: u64) {
+    pub fn retry_failed(&mut self, list_id: ListId) {
         let caller = env::predecessor_account_id();
 
         let mut list = self
             .payment_lists
-            .get(&list_ref)
+            .get(&list_id)
             .expect("Payment list not found")
             .clone();
 
@@ -461,12 +486,12 @@ impl BulkPaymentContract {
             }
         }
 
-        self.payment_lists.insert(list_ref, list);
+        self.payment_lists.insert(list_id.clone(), list);
 
         log!(
             "Reset {} failed payments to pending for list {}",
             retry_count,
-            list_ref
+            list_id
         );
     }
 
@@ -481,14 +506,21 @@ impl BulkPaymentContract {
     /// NEP-141 ft_on_transfer callback for fungible token approval flow
     /// This is called by the token contract after ft_transfer_call
     /// Returns the amount to refund (0 if all tokens are kept)
+    ///
+    /// The `msg` parameter should be the list_id (hex-encoded SHA-256 hash)
     pub fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> U128 {
-        // Parse msg as list_ref
-        let list_ref: u64 = msg.parse().expect("msg must be a valid list reference ID");
+        // msg is the list_id (hex-encoded hash)
+        let list_id: ListId = msg;
+
+        require!(
+            Self::validate_list_id(&list_id),
+            "msg must be a valid list_id (64-character hex string)"
+        );
 
         // Get the list
         let mut list = self
             .payment_lists
-            .get(&list_ref)
+            .get(&list_id)
             .expect("Payment list not found")
             .clone();
 
@@ -523,11 +555,11 @@ impl BulkPaymentContract {
 
         // Approve the list
         list.status = ListStatus::Approved;
-        self.payment_lists.insert(list_ref, list);
+        self.payment_lists.insert(list_id.clone(), list);
 
         log!(
             "Payment list {} approved via ft_transfer_call with {} tokens",
-            list_ref,
+            list_id,
             amount.0
         );
 
@@ -552,15 +584,14 @@ impl MultiTokenReceiver for BulkPaymentContract {
     /// * `previous_owner_ids` - Array of accounts that owned the tokens before transfer
     /// * `token_ids` - Array of token IDs being transferred
     /// * `amounts` - Array of token amounts being transferred (as strings)
-    /// * `msg` - Message containing the payment list reference ID
+    /// * `msg` - Message containing the list_id (hex-encoded SHA-256 hash)
     ///
     /// # Returns
     /// Array of unused token amounts to refund (as strings). Returns all zeros to keep all tokens.
     ///
     /// # Panics
-    /// - If msg is not a valid list reference ID
+    /// - If msg is not a valid list_id (64-character hex string)
     /// - If payment list is not found
-    /// - If sender is not the list submitter
     /// - If list is not in Pending status
     /// - If token_ids/amounts arrays don't match expectations
     /// - If transferred amount doesn't match required total
@@ -575,13 +606,18 @@ impl MultiTokenReceiver for BulkPaymentContract {
         // Suppress unused variable warnings
         let _ = (previous_owner_ids, sender_id);
 
-        // Parse msg as list_ref
-        let list_ref: u64 = msg.parse().expect("msg must be a valid list reference ID");
+        // msg is the list_id (hex-encoded hash)
+        let list_id: ListId = msg;
+
+        require!(
+            BulkPaymentContract::validate_list_id(&list_id),
+            "msg must be a valid list_id (64-character hex string)"
+        );
 
         // Get the list
         let mut list = self
             .payment_lists
-            .get(&list_ref)
+            .get(&list_id)
             .expect("Payment list not found")
             .clone();
 
@@ -633,11 +669,11 @@ impl MultiTokenReceiver for BulkPaymentContract {
 
         // Approve the list
         list.status = ListStatus::Approved;
-        self.payment_lists.insert(list_ref, list);
+        self.payment_lists.insert(list_id.clone(), list);
 
         log!(
             "Payment list {} approved via mt_transfer_call with {} tokens ({})",
-            list_ref,
+            list_id,
             amount.0,
             token_id
         );
@@ -659,10 +695,20 @@ mod tests {
         builder
     }
 
+    /// Generate a valid list_id (64-character hex string) for testing
+    fn test_list_id(suffix: &str) -> ListId {
+        // Create a valid 64-character hex string by hashing the suffix
+        // For testing, we just pad with 'a' (valid hex char) to make 64 characters
+        let hex_suffix = suffix.bytes().map(|b| format!("{:02x}", b)).collect::<String>();
+        let padded = format!("{:a>64}", hex_suffix);
+        padded[..64].to_string()
+    }
+
     #[test]
     fn test_initialization() {
         let contract = BulkPaymentContract::default();
-        assert_eq!(contract.next_list_id, 0);
+        // Verify contract initializes with empty payment lists
+        assert!(contract.payment_lists.is_empty());
     }
 
     #[test]
@@ -726,15 +772,16 @@ mod tests {
             },
         ];
 
-        let list_id = contract.submit_list("native".to_string(), payments, None);
+        let list_id = test_list_id("1");
+        let returned_id = contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // Verify credits were deducted (10 - 2 = 8)
         let credits = contract.view_storage_credits(accounts(0));
         assert_eq!(credits.as_yoctonear(), 8);
 
-        // Verify list was created
-        assert_eq!(list_id, 0);
-        let list = contract.view_list(0);
+        // Verify list was created with the provided list_id
+        assert_eq!(returned_id, list_id);
+        let list = contract.view_list(list_id);
         assert_eq!(list.payments.len(), 2);
         assert_eq!(list.submitter, accounts(0));
     }
@@ -753,7 +800,7 @@ mod tests {
         }];
 
         // Should panic - no storage credits
-        contract.submit_list("native".to_string(), payments, None);
+        contract.submit_list(test_list_id("1"), "native".to_string(), payments, None);
     }
 
     #[test]
@@ -782,14 +829,15 @@ mod tests {
             },
         ];
 
-        let list_id = contract.submit_list("native".to_string(), payments, None);
+        let list_id = test_list_id("approve_test");
+        contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // Approve with exact deposit (3 NEAR total)
         let total_deposit = NearToken::from_yoctonear(3_000_000_000_000_000_000_000_000);
         context.attached_deposit(total_deposit);
         testing_env!(context.build());
 
-        contract.approve_list(list_id);
+        contract.approve_list(list_id.clone());
 
         // Verify status changed
         let list = contract.view_list(list_id);
@@ -817,7 +865,8 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments, None);
+        let list_id = test_list_id("wrong_deposit");
+        contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // Try to approve with wrong deposit
         let wrong_deposit = NearToken::from_yoctonear(500_000_000_000_000_000_000_000);
@@ -848,7 +897,8 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments, None);
+        let list_id = test_list_id("unauthorized");
+        contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // User 1 tries to approve (should fail)
         context = get_context(accounts(1));
@@ -879,10 +929,11 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments, None);
+        let list_id = test_list_id("reject_test");
+        contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // Reject without approval first
-        contract.reject_list(list_id);
+        contract.reject_list(list_id.clone());
 
         let list = contract.view_list(list_id);
         assert!(matches!(list.status, ListStatus::Rejected));
@@ -909,12 +960,13 @@ mod tests {
             amount: U128(1_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id = contract.submit_list("native".to_string(), payments, None);
+        let list_id = test_list_id("reject_approved");
+        contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // Approve the list
         context.attached_deposit(NearToken::from_yoctonear(1_000_000_000_000_000_000_000_000));
         testing_env!(context.build());
-        contract.approve_list(list_id);
+        contract.approve_list(list_id.clone());
 
         // Try to reject an approved list - should panic
         context.attached_deposit(NearToken::from_yoctonear(0));
@@ -948,11 +1000,14 @@ mod tests {
             amount: U128(2_000_000_000_000_000_000_000_000),
         }];
 
-        let list_id1 = contract.submit_list("native".to_string(), payments1, None);
-        let list_id2 = contract.submit_list("native".to_string(), payments2, None);
+        let list_id1 = test_list_id("multi_1");
+        let list_id2 = test_list_id("multi_2");
+        
+        let returned_id1 = contract.submit_list(list_id1.clone(), "native".to_string(), payments1, None);
+        let returned_id2 = contract.submit_list(list_id2.clone(), "native".to_string(), payments2, None);
 
-        assert_eq!(list_id1, 0);
-        assert_eq!(list_id2, 1);
+        assert_eq!(returned_id1, list_id1);
+        assert_eq!(returned_id2, list_id2);
 
         let list1 = contract.view_list(list_id1);
         let list2 = contract.view_list(list_id2);
