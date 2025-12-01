@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use near_api::{Contract, NearGas, NearToken, NetworkConfig, RPCEndpoint, Signer};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -55,6 +56,60 @@ pub struct PaymentList {
     pub created_at: u64,
 }
 
+// ============================================================================
+// SputnikDAO Types for Proposal Verification
+// ============================================================================
+
+/// SputnikDAO proposal status
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ProposalStatus {
+    InProgress,
+    Approved,
+    Rejected,
+    Removed,
+    Expired,
+    Moved,
+    Failed,
+}
+
+/// SputnikDAO function call action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionCall {
+    pub method_name: String,
+    pub args: String, // Base64 encoded
+    pub deposit: String,
+    pub gas: String,
+}
+
+/// SputnikDAO proposal kind
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProposalKind {
+    FunctionCall {
+        #[serde(rename = "FunctionCall")]
+        function_call: FunctionCallKind,
+    },
+    Other(serde_json::Value),
+}
+
+/// Function call proposal kind details
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCallKind {
+    pub receiver_id: String,
+    pub actions: Vec<ActionCall>,
+}
+
+/// SputnikDAO proposal
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Proposal {
+    pub id: u64,
+    pub proposer: String,
+    pub description: String,
+    pub kind: ProposalKind,
+    pub status: ProposalStatus,
+    pub submission_time: String,
+}
+
 /// Client for interacting with the bulk payment contract
 #[derive(Clone)]
 pub struct BulkPaymentClient {
@@ -99,6 +154,111 @@ impl BulkPaymentClient {
         let signer = Signer::new(Signer::from_secret_key(genesis_private_key.parse()?))?;
 
         Ok(Self::new(rpc_url, contract_id, signer))
+    }
+
+    /// Verify that a pending DAO proposal exists with the given list_id (hash) as reference.
+    ///
+    /// This security check ensures that only authorized DAO members can trigger list storage
+    /// by first creating a DAO proposal with the list hash.
+    ///
+    /// The method searches for pending proposals (status: InProgress) that contain:
+    /// - A FunctionCall kind targeting the bulk payment contract
+    /// - The list_id in the proposal description or function call args
+    pub async fn verify_dao_proposal(&self, dao_contract_id: &str, list_id: &str) -> Result<bool> {
+        info!(
+            "Verifying DAO proposal exists for list {} in DAO {}",
+            list_id, dao_contract_id
+        );
+
+        // Get the last proposal ID to know how many proposals to check
+        let last_id: u64 = Contract(dao_contract_id.parse()?)
+            .call_function("get_last_proposal_id", json!({}))?
+            .read_only()
+            .fetch_from(&self.network_config)
+            .await
+            .context("Failed to get last proposal ID")?
+            .data;
+
+        if last_id == 0 {
+            info!("No proposals found in DAO {}", dao_contract_id);
+            return Ok(false);
+        }
+
+        // Check recent proposals (last 100 or all if fewer)
+        let start_id = if last_id > 100 { last_id - 100 } else { 0 };
+
+        for proposal_id in start_id..last_id {
+            match self.get_proposal(dao_contract_id, proposal_id).await {
+                Ok(proposal) => {
+                    // Only check InProgress proposals
+                    if proposal.status != ProposalStatus::InProgress {
+                        continue;
+                    }
+
+                    // Check if this proposal references our list_id
+                    if self.proposal_references_list(&proposal, list_id) {
+                        info!(
+                            "Found matching proposal {} in DAO {} for list {}",
+                            proposal_id, dao_contract_id, list_id
+                        );
+                        return Ok(true);
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to get proposal {}: {}", proposal_id, e);
+                    continue;
+                }
+            }
+        }
+
+        info!(
+            "No matching proposal found in DAO {} for list {}",
+            dao_contract_id, list_id
+        );
+        Ok(false)
+    }
+
+    /// Get a specific proposal from the DAO
+    async fn get_proposal(&self, dao_contract_id: &str, proposal_id: u64) -> Result<Proposal> {
+        let proposal: Proposal = Contract(dao_contract_id.parse()?)
+            .call_function("get_proposal", json!({ "id": proposal_id }))?
+            .read_only()
+            .fetch_from(&self.network_config)
+            .await
+            .context(format!("Failed to get proposal {}", proposal_id))?
+            .data;
+
+        Ok(proposal)
+    }
+
+    /// Check if a proposal references the given list_id
+    fn proposal_references_list(&self, proposal: &Proposal, list_id: &str) -> bool {
+        // Check if list_id is in the description
+        if proposal.description.contains(list_id) {
+            return true;
+        }
+
+        // Check if this is a FunctionCall proposal targeting our contract
+        if let ProposalKind::FunctionCall { function_call } = &proposal.kind {
+            // Check if targeting the bulk payment contract
+            if function_call.receiver_id != self.contract_id {
+                return false;
+            }
+
+            // Check each action's args for the list_id
+            for action in &function_call.actions {
+                // Decode base64 args and check for list_id
+                if let Ok(decoded) = BASE64.decode(&action.args) {
+                    if let Ok(args_str) = String::from_utf8(decoded) {
+                        if args_str.contains(list_id) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     /// Submit a new payment list to the contract
@@ -245,9 +405,7 @@ impl BulkPaymentClient {
             .iter()
             .find_map(|log| {
                 if log.starts_with("Processed ") {
-                    log.split_whitespace()
-                        .nth(1)
-                        .and_then(|s| s.parse().ok())
+                    log.split_whitespace().nth(1).and_then(|s| s.parse().ok())
                 } else {
                     None
                 }
@@ -271,7 +429,9 @@ impl BulkPaymentClient {
     pub async fn get_approved_lists_with_pending(&self) -> Result<Vec<String>> {
         // Note: In a production implementation, this would query the contract
         // for a list of approved lists. For now, we'll track them in the worker.
-        warn!("get_approved_lists_with_pending not fully implemented - requires contract enumeration");
+        warn!(
+            "get_approved_lists_with_pending not fully implemented - requires contract enumeration"
+        );
         Ok(vec![])
     }
 }

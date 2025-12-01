@@ -100,8 +100,12 @@ function sleep(ms) {
 
 /**
  * Make HTTP request to the bulk payment API
+ * @param {string} endpoint - API endpoint
+ * @param {string} method - HTTP method
+ * @param {object} body - Request body
+ * @param {boolean} expectError - If true, don't throw on non-2xx responses
  */
-async function apiRequest(endpoint, method = 'GET', body = null) {
+async function apiRequest(endpoint, method = 'GET', body = null, expectError = false) {
   const url = `${CONFIG.API_URL}${endpoint}`;
   const options = {
     method,
@@ -116,7 +120,7 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
   
   const response = await fetch(url, options);
   
-  if (!response.ok) {
+  if (!response.ok && !expectError) {
     const errorText = await response.text().catch(() => 'Unknown error');
     throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorText}`);
   }
@@ -423,11 +427,40 @@ console.log(`\n🔑 Generated list_id: ${listId}`);
 assert.equal(listId.length, 64, 'list_id must be 64 characters');
 assert.match(listId, /^[0-9a-f]{64}$/, 'list_id must be hex-encoded');
 
-// Step 8: Submit payment list via API
+// Step 7b: Verify API rejects submission WITHOUT a DAO proposal
+console.log('\n🔒 Testing API rejection without DAO proposal...');
+const rejectResponse = await apiRequest('/submit-list', 'POST', {
+  list_id: listId,
+  submitter_id: daoAccountId,
+  dao_contract_id: daoAccountId,
+  token_id: 'native',
+  payments,
+}, true); // expectError = true
+
+assert.equal(rejectResponse.success, false, 'Submit without DAO proposal must fail');
+assert.ok(rejectResponse.error.includes('No pending DAO proposal found'), 
+  `Error should mention missing DAO proposal: ${rejectResponse.error}`);
+console.log(`✅ API correctly rejected submission: ${rejectResponse.error}`);
+
+// Step 8: Create DAO proposal with list_id BEFORE submitting to API
+// This is a security requirement - the API will verify this proposal exists
+console.log('\n📝 Creating DAO proposal with list_id before API submission...');
+const submitListProposalId = await createProposal(
+  account,
+  daoAccountId,
+  `Bulk payment list: ${listId}`, // Include list_id in description for verification
+  CONFIG.BULK_PAYMENT_CONTRACT_ID,
+  'approve_list', // The approval method that will eventually be called
+  { list_id: listId },
+  totalPaymentAmount.toString()
+);
+
+// Step 9: Submit payment list via API (requires DAO proposal to exist)
 console.log('\n📤 Submitting payment list via API...');
 const submitResponse = await apiRequest('/submit-list', 'POST', {
   list_id: listId,
   submitter_id: daoAccountId,
+  dao_contract_id: daoAccountId,
   token_id: 'native',
   payments,
 });
@@ -436,19 +469,8 @@ assert.equal(submitResponse.success, true, `Submit must succeed: ${submitRespons
 assert.equal(submitResponse.list_id, listId, 'Returned list_id must match submitted');
 console.log(`✅ Payment list submitted with ID: ${listId}`);
 
-// Step 9: Create proposal to approve the list
-const approveListProposalId = await createProposal(
-  account,
-  daoAccountId,
-  `Approve payment list ${listId} with ${CONFIG.NUM_RECIPIENTS} recipients`,
-  CONFIG.BULK_PAYMENT_CONTRACT_ID,
-  'approve_list',
-  { list_id: listId },
-  totalPaymentAmount.toString()
-);
-
-// Step 10: Approve the payment list proposal
-await approveProposal(account, daoAccountId, approveListProposalId);
+// Step 10: Approve the payment list proposal (already created in Step 8)
+await approveProposal(account, daoAccountId, submitListProposalId);
 
 // Wait for execution
 await sleep(2000);

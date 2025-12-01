@@ -32,14 +32,13 @@ async fn main() -> Result<()> {
 
     // Read configuration from environment
     let rpc_url = std::env::var("NEAR_RPC_URL").unwrap_or_else(|_| "http://localhost:3030".into());
-    let contract_id =
-        std::env::var("BULK_PAYMENT_CONTRACT_ID").unwrap_or_else(|_| "bulk-payment.test.near".into());
+    let contract_id = std::env::var("BULK_PAYMENT_CONTRACT_ID")
+        .unwrap_or_else(|_| "bulk-payment.test.near".into());
     let api_port = std::env::var("API_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080u16);
-    let worker_caller =
-        std::env::var("WORKER_CALLER_ID").unwrap_or_else(|_| "test.near".into());
+    let worker_caller = std::env::var("WORKER_CALLER_ID").unwrap_or_else(|_| "test.near".into());
 
     info!("Configuration:");
     info!("  RPC URL: {}", rpc_url);

@@ -30,6 +30,7 @@ pub struct AppState {
 pub struct SubmitListRequest {
     pub list_id: String,
     pub submitter_id: String,
+    pub dao_contract_id: String,
     pub token_id: String,
     pub payments: Vec<PaymentInput>,
 }
@@ -129,20 +130,76 @@ async fn health_check() -> impl IntoResponse {
 }
 
 /// Submit a new payment list
+///
+/// This endpoint requires a pending DAO proposal to exist with the list_id (hash)
+/// as a reference. This ensures only authorized DAO members can trigger list storage.
 async fn submit_list(
     State(state): State<AppState>,
     Json(request): Json<SubmitListRequest>,
 ) -> impl IntoResponse {
     info!(
-        "Received submit-list request from {} with {} payments, list_id: {}",
+        "Received submit-list request from {} (DAO: {}) with {} payments, list_id: {}",
         request.submitter_id,
+        request.dao_contract_id,
         request.payments.len(),
         request.list_id
     );
 
+    // First, verify that a pending DAO proposal exists with this list_id
     match state
         .client
-        .submit_list(&request.list_id, &request.submitter_id, &request.token_id, request.payments)
+        .verify_dao_proposal(&request.dao_contract_id, &request.list_id)
+        .await
+    {
+        Ok(true) => {
+            info!(
+                "DAO proposal verification passed for list {} in DAO {}",
+                request.list_id, request.dao_contract_id
+            );
+        }
+        Ok(false) => {
+            error!(
+                "No pending DAO proposal found for list {} in DAO {}",
+                request.list_id, request.dao_contract_id
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(SubmitListResponse {
+                    success: false,
+                    list_id: None,
+                    error: Some(format!(
+                        "No pending DAO proposal found with list_id {} in DAO {}. \
+                         Create a DAO proposal first with the list hash as reference.",
+                        request.list_id, request.dao_contract_id
+                    )),
+                }),
+            );
+        }
+        Err(e) => {
+            error!(
+                "Failed to verify DAO proposal for list {}: {}",
+                request.list_id, e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SubmitListResponse {
+                    success: false,
+                    list_id: None,
+                    error: Some(format!("Failed to verify DAO proposal: {}", e)),
+                }),
+            );
+        }
+    }
+
+    // DAO proposal verified - proceed with list submission
+    match state
+        .client
+        .submit_list(
+            &request.list_id,
+            &request.submitter_id,
+            &request.token_id,
+            request.payments,
+        )
         .await
     {
         Ok(list_id) => {
