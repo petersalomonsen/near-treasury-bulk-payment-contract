@@ -12,9 +12,12 @@ The payment list ID is a SHA-256 hash of the list contents. This ensures:
 
 **Hash Calculation:**
 ```
-list_id = SHA256(canonical_json(sorted_payments))
+list_id = SHA256(canonical_json)
 ```
-Where `sorted_payments` ensures deterministic ordering (sorted by recipient account ID).
+Where `canonical_json` is:
+- Keys sorted alphabetically: `{"payments":[...],"submitter":"...","token_id":"..."}`
+- Payment keys sorted alphabetically: `{"amount":"...","recipient":"..."}`
+- Payments sorted by recipient account ID
 
 ---
 
@@ -25,10 +28,11 @@ Where `sorted_payments` ensures deterministic ordering (sorted by recipient acco
 2. **UI creates DAO proposal first** with the list hash as the bulk-payment reference. This requires proper DAO permissions, preventing unauthorized submissions.
 
 3. **UI submits payment list to Treasury backend** along with the hash
+   - Backend verifies the SHA-256 hash of the payload matches the provided list_id (integrity check)
    - Backend queries the DAO contract to verify a pending proposal exists with this hash
    - Backend validates accounts are valid and registered in target FT contracts
    - Backend submits the list to the bulk payment contract using the hash as the list ID
-   - Only if the hash matches a pending DAO proposal will the list be accepted
+   - Only if the hash matches the payload AND a pending DAO proposal exists will the list be accepted
 
 4. **Treasury displays** custom "bulk-payment" proposals showing the actual payment list (fetched from backend/contract using the hash)
 

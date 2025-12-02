@@ -11,11 +11,35 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
 use crate::contract::{BulkPaymentClient, ListStatus, PaymentInput, PaymentList, PaymentStatus};
+
+/// Compute SHA-256 hash of payment list for verification
+/// This ensures the provided list_id matches the actual payload content
+fn compute_list_hash(submitter_id: &str, token_id: &str, payments: &[PaymentInput]) -> String {
+    // Sort payments by recipient for deterministic ordering
+    let mut sorted_payments: Vec<_> = payments.iter().collect();
+    sorted_payments.sort_by(|a, b| a.recipient.cmp(&b.recipient));
+
+    // Create canonical JSON representation
+    let canonical = serde_json::json!({
+        "submitter": submitter_id,
+        "token_id": token_id,
+        "payments": sorted_payments
+    });
+
+    // Compute SHA-256 hash
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string().as_bytes());
+    let result = hasher.finalize();
+
+    // Return hex-encoded hash
+    hex::encode(result)
+}
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -145,7 +169,30 @@ async fn submit_list(
         request.list_id
     );
 
-    // First, verify that a pending DAO proposal exists with this list_id
+    // First, verify the list_id matches the SHA-256 hash of the payload
+    let computed_hash = compute_list_hash(&request.submitter_id, &request.token_id, &request.payments);
+    if computed_hash != request.list_id {
+        error!(
+            "Hash mismatch: provided list_id {} does not match computed hash {}",
+            request.list_id, computed_hash
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(SubmitListResponse {
+                success: false,
+                list_id: None,
+                error: Some(format!(
+                    "Invalid list_id: provided hash {} does not match computed hash {} of the payload. \
+                     The list_id must be SHA-256(canonical_json(sorted_payments)).",
+                    request.list_id, computed_hash
+                )),
+            }),
+        );
+    }
+
+    info!("Hash verification passed for list {}", request.list_id);
+
+    // Second, verify that a pending DAO proposal exists with this list_id
     match state
         .client
         .verify_dao_proposal(&request.dao_contract_id, &request.list_id)
@@ -258,5 +305,27 @@ async fn get_list(State(state): State<AppState>, Path(id): Path<String>) -> impl
                 }),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_list_hash() {
+        let payments = vec![PaymentInput {
+            recipient: "a.near".to_string(),
+            amount: "100".to_string(),
+        }];
+        let hash = compute_list_hash("test.near", "native", &payments);
+        println!("Rust JSON: {}", serde_json::json!({
+            "submitter": "test.near",
+            "token_id": "native",
+            "payments": &payments
+        }));
+        println!("Rust Hash: {}", hash);
+        // serde_json alphabetizes keys: {"payments":[...],"submitter":"...","token_id":"..."}
+        assert_eq!(hash, "b667f7213a94d9e4f106080e7b3ec2f92d3ad19c71c4d6cb45b2f6f370c59ec4");
     }
 }

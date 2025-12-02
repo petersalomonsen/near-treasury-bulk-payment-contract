@@ -84,11 +84,27 @@ function generateImplicitAccountId(index) {
 
 /**
  * Generate a valid list_id (64-char hex-encoded SHA-256 hash)
- * The contract validates that list_id is exactly 64 hex characters [0-9a-f]
+ * The API validates that list_id matches SHA-256(canonical_json(sorted_payments))
+ * This ensures the payload matches the hash (integrity guarantee)
+ * 
+ * IMPORTANT: The hash must match the Rust API's serde_json serialization which:
+ * 1. Sorts object keys alphabetically
+ * 2. Sorts payments by recipient
  */
 function generateListId(submitterId, tokenId, payments) {
-  const data = JSON.stringify({ submitter: submitterId, token_id: tokenId, payments });
-  return createHash('sha256').update(data).digest('hex');
+  // Sort payments by recipient for deterministic ordering (must match API)
+  const sortedPayments = [...payments].sort((a, b) => a.recipient.localeCompare(b.recipient));
+  
+  // Create canonical JSON with alphabetically sorted keys (matches Rust serde_json)
+  // Key order: payments, submitter, token_id (alphabetical)
+  // Payment key order: amount, recipient (alphabetical)
+  const canonical = JSON.stringify({
+    payments: sortedPayments.map(p => ({ amount: p.amount, recipient: p.recipient })),
+    submitter: submitterId,
+    token_id: tokenId,
+  });
+  
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 /**
@@ -427,7 +443,23 @@ console.log(`\n🔑 Generated list_id: ${listId}`);
 assert.equal(listId.length, 64, 'list_id must be 64 characters');
 assert.match(listId, /^[0-9a-f]{64}$/, 'list_id must be hex-encoded');
 
-// Step 7b: Verify API rejects submission WITHOUT a DAO proposal
+// Step 7b: Verify API rejects submission with WRONG hash (payload doesn't match list_id)
+console.log('\n🔒 Testing API rejection with mismatched hash...');
+const wrongHashResponse = await apiRequest('/submit-list', 'POST', {
+  list_id: listId,
+  submitter_id: daoAccountId,
+  dao_contract_id: daoAccountId,
+  token_id: 'native',
+  // Tamper with payments - change first recipient's amount
+  payments: payments.map((p, i) => i === 0 ? { ...p, amount: '999' } : p),
+}, true); // expectError = true
+
+assert.equal(wrongHashResponse.success, false, 'Submit with wrong hash must fail');
+assert.ok(wrongHashResponse.error.includes('does not match computed hash'), 
+  `Error should mention hash mismatch: ${wrongHashResponse.error}`);
+console.log(`✅ API correctly rejected tampered payload: ${wrongHashResponse.error}`);
+
+// Step 7c: Verify API rejects submission WITHOUT a DAO proposal
 console.log('\n🔒 Testing API rejection without DAO proposal...');
 const rejectResponse = await apiRequest('/submit-list', 'POST', {
   list_id: listId,
