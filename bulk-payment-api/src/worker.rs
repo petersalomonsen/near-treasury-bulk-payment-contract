@@ -38,7 +38,7 @@ pub struct PayoutWorker {
     client: BulkPaymentClient,
     config: WorkerConfig,
     /// Track lists that need processing
-    pending_lists: Arc<RwLock<Vec<u64>>>,
+    pending_lists: Arc<RwLock<Vec<String>>>,
 }
 
 impl PayoutWorker {
@@ -50,7 +50,7 @@ impl PayoutWorker {
     pub fn new(
         client: BulkPaymentClient,
         config: WorkerConfig,
-        pending_lists: Arc<RwLock<Vec<u64>>>,
+        pending_lists: Arc<RwLock<Vec<String>>>,
     ) -> Self {
         Self {
             client,
@@ -79,7 +79,7 @@ impl PayoutWorker {
     /// Process all pending lists
     async fn process_pending_lists(&self) -> Result<()> {
         // Get a copy of the pending lists
-        let lists: Vec<u64> = {
+        let lists: Vec<String> = {
             let pending = self.pending_lists.read().await;
             pending.clone()
         };
@@ -93,11 +93,11 @@ impl PayoutWorker {
 
         let mut lists_to_remove = Vec::new();
 
-        for list_id in lists {
+        for list_id in &lists {
             match self.process_list(list_id).await {
                 Ok(complete) => {
                     if complete {
-                        lists_to_remove.push(list_id);
+                        lists_to_remove.push(list_id.clone());
                     }
                 }
                 Err(e) => {
@@ -124,7 +124,7 @@ impl PayoutWorker {
     /// Process a single payment list
     ///
     /// Returns true if the list is complete (no more pending payments)
-    async fn process_list(&self, list_id: u64) -> Result<bool> {
+    async fn process_list(&self, list_id: &str) -> Result<bool> {
         // Get the list status
         let list = self.client.view_list(list_id).await?;
 
