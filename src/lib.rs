@@ -375,7 +375,10 @@ impl BulkPaymentContract {
                     if promise_to_return.is_none() {
                         promise_to_return = Some(p);
                     }
-                } else if list.token_id == "native" || list.token_id == "near" {
+                } else if list.token_id == "native"
+                    || list.token_id == "near"
+                    || list.token_id == "NEAR"
+                {
                     // Native NEAR transfer
                     let p = Promise::new(payment.recipient.clone())
                         .transfer(NearToken::from_yoctonear(payment.amount.0));
