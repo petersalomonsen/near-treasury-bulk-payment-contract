@@ -411,42 +411,77 @@ const keyPair = KeyPair.fromString(CONFIG.GENESIS_PRIVATE_KEY);
 await keyStore.setKey('sandbox', daoAccountId, keyPair);
 const daoAccount = await near.account(daoAccountId);
 
-// Step 4: Create proposal to buy_storage
+// Check DAO balance and top up if needed
+const daoState = await daoAccount.state();
+const daoBalance = BigInt(daoState.amount);
+const minBalance = parseNEAR('100'); // Need at least 100 NEAR for operations
+console.log(`\n💼 DAO balance: ${formatNEAR(daoBalance.toString())} NEAR`);
+
+if (daoBalance < BigInt(minBalance)) {
+  const topUpAmount = parseNEAR('200'); // Top up with 200 NEAR
+  console.log(`📤 Topping up DAO with ${formatNEAR(topUpAmount)} NEAR...`);
+  await account.sendMoney(daoAccountId, BigInt(topUpAmount));
+  console.log(`✅ DAO topped up`);
+}
+
+// Step 4: Check existing storage credits and buy more if needed
 const storageCost = calculateStorageCost(CONFIG.NUM_RECIPIENTS);
 console.log(`\n💰 Storage cost for ${CONFIG.NUM_RECIPIENTS} records: ${formatNEAR(storageCost)} NEAR`);
 
-const buyStorageProposalId = await createProposal(
-  account,
-  daoAccountId,
-  `Buy storage for ${CONFIG.NUM_RECIPIENTS} payment records`,
-  CONFIG.BULK_PAYMENT_CONTRACT_ID,
-  'buy_storage',
-  { num_records: CONFIG.NUM_RECIPIENTS },
-  storageCost
-);
+// Check existing storage credits
+let existingCredits = BigInt(0);
+try {
+  const credits = await account.viewFunction({
+    contractId: CONFIG.BULK_PAYMENT_CONTRACT_ID,
+    methodName: 'view_storage_credits',
+    args: { account_id: daoAccountId },
+  });
+  existingCredits = BigInt(credits || '0');
+  console.log(`📊 Existing storage credits: ${formatNEAR(existingCredits.toString())} NEAR`);
+} catch (e) {
+  console.log(`📊 No existing storage credits found`);
+}
 
-// Step 5: Approve buy_storage proposal
-await approveProposal(account, daoAccountId, buyStorageProposalId);
+const storageCostBigInt = BigInt(storageCost);
+if (existingCredits >= storageCostBigInt) {
+  console.log(`✅ Sufficient storage credits available, skipping buy_storage`);
+} else {
+  const additionalNeeded = storageCostBigInt - existingCredits;
+  console.log(`📝 Need to buy additional storage: ${formatNEAR(additionalNeeded.toString())} NEAR`);
+  
+  const buyStorageProposalId = await createProposal(
+    account,
+    daoAccountId,
+    `Buy storage for ${CONFIG.NUM_RECIPIENTS} payment records`,
+    CONFIG.BULK_PAYMENT_CONTRACT_ID,
+    'buy_storage',
+    { num_records: CONFIG.NUM_RECIPIENTS },
+    storageCost // Buy full amount (contract handles credits)
+  );
 
-// Wait for execution
-await sleep(2000);
+  // Step 5: Approve buy_storage proposal
+  await approveProposal(account, daoAccountId, buyStorageProposalId);
 
-// Step 6: Generate payment list with unique nonce for each run
+  // Wait for execution
+  await sleep(2000);
+}
+
+// Step 6: Generate payment list with unique amounts for each run
 console.log(`\n📋 Generating payment list with ${CONFIG.NUM_RECIPIENTS} recipients...`);
-const testRunNonce = Date.now().toString(); // Make each test run unique
+const testRunNonce = Date.now(); // Make each test run unique
 const payments = [];
 let totalPaymentAmount = BigInt(0);
 
 for (let i = 0; i < CONFIG.NUM_RECIPIENTS; i++) {
   const recipient = generateImplicitAccountId(i);
   // Add small random variation to make list_id unique per run
+  // Use timestamp mod 1000000 to add a unique offset to each run
   const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
-  const variation = BigInt(i % 1000); // Small variation based on recipient index
+  const variation = BigInt((testRunNonce % 1000000) + i); // Unique per run + recipient
   const uniqueAmount = (baseAmount + variation).toString();
   payments.push({
     recipient,
     amount: uniqueAmount,
-    nonce: testRunNonce, // Add nonce to make each run unique
   });
   totalPaymentAmount += BigInt(uniqueAmount);
 }

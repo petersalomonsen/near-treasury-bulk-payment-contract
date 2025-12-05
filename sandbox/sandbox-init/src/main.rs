@@ -7,7 +7,8 @@
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use near_api::{AccountId, NetworkConfig, NearToken, Signer};
+use near_api::{AccountId, NetworkConfig, NearToken, PublicKey, Signer};
+use near_api::types::{AccessKeyPermission, transaction::actions::FunctionCallPermission};
 use near_gas::NearGas;
 use near_sandbox::GenesisAccount;
 use std::path::{Path, PathBuf};
@@ -393,13 +394,40 @@ async fn deploy_bulk_payment_contract(
         .use_code(contract_code)
         .with_init_call("new", ())
         .unwrap()
-        .with_signer(contract_signer)
+        .with_signer(contract_signer.clone())
         .send_to(network_config)
         .await
         .context("Failed to deploy bulk payment contract")?
         .assert_success();
 
     info!("Successfully deployed bulk payment contract to {}", contract_id);
+
+    // Add a function access key for the contract to call itself (for payout_batch, submit_list, etc.)
+    // This allows the API worker to execute operations using the contract's own account
+    // Using a dedicated key separate from the genesis full access key
+    info!("Adding function access key to {} for all contract methods", contract_id);
+    
+    // Dedicated API function access key (hardcoded for sandbox)
+    // Private: ed25519:Mb4FS43HbvYHgFwq4BVkxPd1vktFVXEd7AEEZANdM6UUniZvcdHT9yZ6QmmwDPbeDh5esR5NLCmRA3hRy9jaunG
+    // Public: ed25519:C72KRM91LgqMmbKVspQAF9j5dgGGaxYPT5rnnXtLXmsN
+    let api_public_key: PublicKey = "ed25519:C72KRM91LgqMmbKVspQAF9j5dgGGaxYPT5rnnXtLXmsN".parse()
+        .expect("Failed to parse API public key");
+    
+    near_api::Account(contract_id.clone())
+        .add_key(AccessKeyPermission::FunctionCall(
+            FunctionCallPermission {
+                allowance: None, // Unlimited allowance
+                receiver_id: contract_id.to_string(),
+                method_names: vec![], // Empty = all methods allowed
+            },
+        ), api_public_key)
+        .with_signer(contract_signer)
+        .send_to(network_config)
+        .await
+        .context("Failed to add function access key")?
+        .assert_success();
+
+    info!("Successfully added function access key to {}", contract_id);
     Ok(())
 }
 
