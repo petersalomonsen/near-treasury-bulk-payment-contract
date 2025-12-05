@@ -42,7 +42,7 @@ const CONFIG = {
   
   // Contract IDs
   DAO_FACTORY_ID: process.env.DAO_FACTORY_ID || 'sputnik-dao.near',
-  BULK_PAYMENT_CONTRACT_ID: process.env.BULK_PAYMENT_CONTRACT_ID || 'bulk-payment.sandbox',
+  BULK_PAYMENT_CONTRACT_ID: process.env.BULK_PAYMENT_CONTRACT_ID || 'bulk-payment.near',
   
   // Test parameters
   NUM_RECIPIENTS: parseInt(process.env.NUM_RECIPIENTS || '500', 10),
@@ -51,7 +51,7 @@ const CONFIG = {
   // Genesis account credentials (default sandbox genesis account from near-sandbox-rs - PUBLIC TEST KEY)
   // See: https://github.com/near/near-sandbox-rs/blob/main/src/config.rs
   // This is the well-known sandbox test account key, safe for testing purposes only
-  GENESIS_ACCOUNT_ID: process.env.GENESIS_ACCOUNT_ID || 'sandbox',
+  GENESIS_ACCOUNT_ID: process.env.GENESIS_ACCOUNT_ID || 'test.near',
   GENESIS_PRIVATE_KEY: process.env.GENESIS_PRIVATE_KEY || 'ed25519:3tgdk2wPraJzT4nsTuf86UX41xgPNk3MHnq8epARMdBNs29AFEztAuaQ7iHddDfXG9F2RzV1XNQYgJyAyoW51UBB',
 };
 
@@ -177,6 +177,8 @@ async function setupNearConnection() {
 async function createDAO(account, daoName, creatorAccountId) {
   console.log(`\n📋 Creating DAO: ${daoName}.${CONFIG.DAO_FACTORY_ID}`);
   
+  const daoAccountId = `${daoName}.${CONFIG.DAO_FACTORY_ID}`;
+  
   const createDaoArgs = {
     name: daoName,
     args: Buffer.from(JSON.stringify({
@@ -207,16 +209,25 @@ async function createDAO(account, daoName, creatorAccountId) {
     })).toString('base64'),
   };
   
-  const result = await account.functionCall({
-    contractId: CONFIG.DAO_FACTORY_ID,
-    methodName: 'create',
-    args: createDaoArgs,
-    gas: '300000000000000', // 300 TGas
-    attachedDeposit: parseNEAR('100'), // 100 NEAR for DAO creation (needs funds for proposals)
-  });
+  try {
+    const result = await account.functionCall({
+      contractId: CONFIG.DAO_FACTORY_ID,
+      methodName: 'create',
+      args: createDaoArgs,
+      gas: '300000000000000', // 300 TGas
+      attachedDeposit: parseNEAR('100'), // 100 NEAR for DAO creation (needs funds for proposals)
+    });
+    
+    console.log(`✅ DAO created: ${daoAccountId}`);
+  } catch (error) {
+    if (error.message && error.message.includes('already exists')) {
+      console.log(`ℹ️  DAO already exists: ${daoAccountId} (reusing)`);
+    } else {
+      throw error;
+    }
+  }
   
-  console.log(`✅ DAO created: ${daoName}.${CONFIG.DAO_FACTORY_ID}`);
-  return `${daoName}.${CONFIG.DAO_FACTORY_ID}`;
+  return daoAccountId;
 }
 
 /**
@@ -420,18 +431,24 @@ await approveProposal(account, daoAccountId, buyStorageProposalId);
 // Wait for execution
 await sleep(2000);
 
-// Step 6: Generate payment list
+// Step 6: Generate payment list with unique nonce for each run
 console.log(`\n📋 Generating payment list with ${CONFIG.NUM_RECIPIENTS} recipients...`);
+const testRunNonce = Date.now().toString(); // Make each test run unique
 const payments = [];
 let totalPaymentAmount = BigInt(0);
 
 for (let i = 0; i < CONFIG.NUM_RECIPIENTS; i++) {
   const recipient = generateImplicitAccountId(i);
+  // Add small random variation to make list_id unique per run
+  const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
+  const variation = BigInt(i % 1000); // Small variation based on recipient index
+  const uniqueAmount = (baseAmount + variation).toString();
   payments.push({
     recipient,
-    amount: CONFIG.PAYMENT_AMOUNT,
+    amount: uniqueAmount,
+    nonce: testRunNonce, // Add nonce to make each run unique
   });
-  totalPaymentAmount += BigInt(CONFIG.PAYMENT_AMOUNT);
+  totalPaymentAmount += BigInt(uniqueAmount);
 }
 
 console.log(`✅ Generated ${payments.length} payments`);
