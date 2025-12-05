@@ -42,7 +42,7 @@ const CONFIG = {
   
   // Contract IDs
   DAO_FACTORY_ID: process.env.DAO_FACTORY_ID || 'sputnik-dao.near',
-  BULK_PAYMENT_CONTRACT_ID: process.env.BULK_PAYMENT_CONTRACT_ID || 'bulk-payment.sandbox',
+  BULK_PAYMENT_CONTRACT_ID: process.env.BULK_PAYMENT_CONTRACT_ID || 'bulk-payment.near',
   
   // Test parameters
   NUM_RECIPIENTS: parseInt(process.env.NUM_RECIPIENTS || '500', 10),
@@ -51,7 +51,7 @@ const CONFIG = {
   // Genesis account credentials (default sandbox genesis account from near-sandbox-rs - PUBLIC TEST KEY)
   // See: https://github.com/near/near-sandbox-rs/blob/main/src/config.rs
   // This is the well-known sandbox test account key, safe for testing purposes only
-  GENESIS_ACCOUNT_ID: process.env.GENESIS_ACCOUNT_ID || 'sandbox',
+  GENESIS_ACCOUNT_ID: process.env.GENESIS_ACCOUNT_ID || 'test.near',
   GENESIS_PRIVATE_KEY: process.env.GENESIS_PRIVATE_KEY || 'ed25519:3tgdk2wPraJzT4nsTuf86UX41xgPNk3MHnq8epARMdBNs29AFEztAuaQ7iHddDfXG9F2RzV1XNQYgJyAyoW51UBB',
 };
 
@@ -177,6 +177,8 @@ async function setupNearConnection() {
 async function createDAO(account, daoName, creatorAccountId) {
   console.log(`\n📋 Creating DAO: ${daoName}.${CONFIG.DAO_FACTORY_ID}`);
   
+  const daoAccountId = `${daoName}.${CONFIG.DAO_FACTORY_ID}`;
+  
   const createDaoArgs = {
     name: daoName,
     args: Buffer.from(JSON.stringify({
@@ -207,16 +209,25 @@ async function createDAO(account, daoName, creatorAccountId) {
     })).toString('base64'),
   };
   
-  const result = await account.functionCall({
-    contractId: CONFIG.DAO_FACTORY_ID,
-    methodName: 'create',
-    args: createDaoArgs,
-    gas: '300000000000000', // 300 TGas
-    attachedDeposit: parseNEAR('100'), // 100 NEAR for DAO creation (needs funds for proposals)
-  });
+  try {
+    const result = await account.functionCall({
+      contractId: CONFIG.DAO_FACTORY_ID,
+      methodName: 'create',
+      args: createDaoArgs,
+      gas: '300000000000000', // 300 TGas
+      attachedDeposit: parseNEAR('100'), // 100 NEAR for DAO creation (needs funds for proposals)
+    });
+    
+    console.log(`✅ DAO created: ${daoAccountId}`);
+  } catch (error) {
+    if (error.message && error.message.includes('already exists')) {
+      console.log(`ℹ️  DAO already exists: ${daoAccountId} (reusing)`);
+    } else {
+      throw error;
+    }
+  }
   
-  console.log(`✅ DAO created: ${daoName}.${CONFIG.DAO_FACTORY_ID}`);
-  return `${daoName}.${CONFIG.DAO_FACTORY_ID}`;
+  return daoAccountId;
 }
 
 /**
@@ -400,38 +411,79 @@ const keyPair = KeyPair.fromString(CONFIG.GENESIS_PRIVATE_KEY);
 await keyStore.setKey('sandbox', daoAccountId, keyPair);
 const daoAccount = await near.account(daoAccountId);
 
-// Step 4: Create proposal to buy_storage
+// Check DAO balance and top up if needed
+const daoState = await daoAccount.state();
+const daoBalance = BigInt(daoState.amount);
+const minBalance = parseNEAR('100'); // Need at least 100 NEAR for operations
+console.log(`\n💼 DAO balance: ${formatNEAR(daoBalance.toString())} NEAR`);
+
+if (daoBalance < BigInt(minBalance)) {
+  const topUpAmount = parseNEAR('200'); // Top up with 200 NEAR
+  console.log(`📤 Topping up DAO with ${formatNEAR(topUpAmount)} NEAR...`);
+  await account.sendMoney(daoAccountId, BigInt(topUpAmount));
+  console.log(`✅ DAO topped up`);
+}
+
+// Step 4: Check existing storage credits and buy more if needed
 const storageCost = calculateStorageCost(CONFIG.NUM_RECIPIENTS);
 console.log(`\n💰 Storage cost for ${CONFIG.NUM_RECIPIENTS} records: ${formatNEAR(storageCost)} NEAR`);
 
-const buyStorageProposalId = await createProposal(
-  account,
-  daoAccountId,
-  `Buy storage for ${CONFIG.NUM_RECIPIENTS} payment records`,
-  CONFIG.BULK_PAYMENT_CONTRACT_ID,
-  'buy_storage',
-  { num_records: CONFIG.NUM_RECIPIENTS },
-  storageCost
-);
+// Check existing storage credits
+let existingCredits = BigInt(0);
+try {
+  const credits = await account.viewFunction({
+    contractId: CONFIG.BULK_PAYMENT_CONTRACT_ID,
+    methodName: 'view_storage_credits',
+    args: { account_id: daoAccountId },
+  });
+  existingCredits = BigInt(credits || '0');
+  console.log(`📊 Existing storage credits: ${formatNEAR(existingCredits.toString())} NEAR`);
+} catch (e) {
+  console.log(`📊 No existing storage credits found`);
+}
 
-// Step 5: Approve buy_storage proposal
-await approveProposal(account, daoAccountId, buyStorageProposalId);
+const storageCostBigInt = BigInt(storageCost);
+if (existingCredits >= storageCostBigInt) {
+  console.log(`✅ Sufficient storage credits available, skipping buy_storage`);
+} else {
+  const additionalNeeded = storageCostBigInt - existingCredits;
+  console.log(`📝 Need to buy additional storage: ${formatNEAR(additionalNeeded.toString())} NEAR`);
+  
+  const buyStorageProposalId = await createProposal(
+    account,
+    daoAccountId,
+    `Buy storage for ${CONFIG.NUM_RECIPIENTS} payment records`,
+    CONFIG.BULK_PAYMENT_CONTRACT_ID,
+    'buy_storage',
+    { num_records: CONFIG.NUM_RECIPIENTS },
+    storageCost // Buy full amount (contract handles credits)
+  );
 
-// Wait for execution
-await sleep(2000);
+  // Step 5: Approve buy_storage proposal
+  await approveProposal(account, daoAccountId, buyStorageProposalId);
 
-// Step 6: Generate payment list
+  // Wait for execution
+  await sleep(2000);
+}
+
+// Step 6: Generate payment list with unique amounts for each run
 console.log(`\n📋 Generating payment list with ${CONFIG.NUM_RECIPIENTS} recipients...`);
+const testRunNonce = Date.now(); // Make each test run unique
 const payments = [];
 let totalPaymentAmount = BigInt(0);
 
 for (let i = 0; i < CONFIG.NUM_RECIPIENTS; i++) {
   const recipient = generateImplicitAccountId(i);
+  // Add small random variation to make list_id unique per run
+  // Use timestamp mod 1000000 to add a unique offset to each run
+  const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
+  const variation = BigInt((testRunNonce % 1000000) + i); // Unique per run + recipient
+  const uniqueAmount = (baseAmount + variation).toString();
   payments.push({
     recipient,
-    amount: CONFIG.PAYMENT_AMOUNT,
+    amount: uniqueAmount,
   });
-  totalPaymentAmount += BigInt(CONFIG.PAYMENT_AMOUNT);
+  totalPaymentAmount += BigInt(uniqueAmount);
 }
 
 console.log(`✅ Generated ${payments.length} payments`);

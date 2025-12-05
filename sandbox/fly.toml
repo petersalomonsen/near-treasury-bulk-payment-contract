@@ -17,7 +17,7 @@ dockerfile = "Dockerfile"
 NEAR_RPC_URL = 'http://localhost:3030'
 
 # Bulk Payment API configuration
-BULK_PAYMENT_CONTRACT_ID = 'bulk-payment.test.near'
+BULK_PAYMENT_CONTRACT_ID = 'bulk-payment.near'
 API_PORT = '8080'
 
 # Sputnik Indexer configuration

@@ -1,0 +1,37 @@
+# fly.toml app configuration file generated for bulk-payment-api on 2025-12-04T20:47:05+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'bulk-payment-api'
+primary_region = 'ams'
+
+[build]
+
+[env]
+  API_PORT = '8080'
+  BULK_PAYMENT_CONTRACT_ID = 'bulkpayment.near'
+  NEAR_RPC_URL = 'https://rpc.mainnet.fastnear.com'
+  PORT = '8080'
+  RUST_LOG = 'info'
+  WORKER_CALLER_ID = 'bulkpayment.near'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '10s'
+    grace_period = '30s'
+    method = 'GET'
+    path = '/health'
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1

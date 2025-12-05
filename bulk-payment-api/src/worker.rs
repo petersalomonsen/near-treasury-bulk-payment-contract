@@ -101,7 +101,10 @@ impl PayoutWorker {
                     }
                 }
                 Err(e) => {
-                    warn!("Error processing list {}: {}", list_id, e);
+                    // Remove the list on error to prevent infinite retries
+                    // The list can be manually resubmitted if needed
+                    error!("Error processing list {}: {}. Removing from queue (no retry).", list_id, e);
+                    lists_to_remove.push(list_id.clone());
                 }
             }
         }
