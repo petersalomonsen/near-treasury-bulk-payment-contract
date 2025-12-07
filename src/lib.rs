@@ -128,7 +128,7 @@ impl BulkPaymentContract {
             .checked_mul(11)
             .and_then(|x| x.checked_div(10))
             .expect("Total cost calculation overflow");
-        
+
         NearToken::from_yoctonear(total_cost_yocto)
     }
 
@@ -161,7 +161,7 @@ impl BulkPaymentContract {
         // Determine who receives the storage credits
         let caller = env::predecessor_account_id();
         let beneficiary = beneficiary_account_id.unwrap_or(caller);
-        
+
         // Track storage credits for the beneficiary account
         let current_credits = self
             .storage_credits
@@ -1059,15 +1059,15 @@ mod tests {
     #[test]
     fn test_calculate_storage_cost() {
         let contract = BulkPaymentContract::default();
-        
+
         // Calculate expected cost for 10 records
         // 216 bytes per record * 10 = 2160 bytes
         // 2160 * 10^19 yoctoNEAR/byte = 21600000000000000000000 yoctoNEAR
         // With 10% markup: 21600000000000000000000 * 1.1 = 23760000000000000000000 yoctoNEAR
         let expected_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
-        
+
         let calculated_cost = contract.calculate_storage_cost(10);
-        
+
         assert_eq!(calculated_cost, expected_cost);
     }
 
@@ -1081,23 +1081,23 @@ mod tests {
     #[test]
     fn test_buy_storage_on_behalf_of_another_account() {
         let mut context = get_context(accounts(0)); // User 0 is the payer
-        
+
         // Calculate expected cost for 10 records
         let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
-        
+
         let mut contract = BulkPaymentContract::default();
-        
+
         // User 0 buys storage for User 1
         let result = contract.buy_storage(10, Some(accounts(1)));
-        
+
         assert_eq!(result, storage_cost);
-        
+
         // Verify User 0 (payer) has no credits
         let payer_credits = contract.view_storage_credits(accounts(0));
         assert_eq!(payer_credits.as_yoctonear(), 0);
-        
+
         // Verify User 1 (beneficiary) has the credits
         let beneficiary_credits = contract.view_storage_credits(accounts(1));
         assert_eq!(beneficiary_credits.as_yoctonear(), 10);
@@ -1106,18 +1106,18 @@ mod tests {
     #[test]
     fn test_buy_storage_without_beneficiary_credits_caller() {
         let mut context = get_context(accounts(0));
-        
+
         let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
-        
+
         let mut contract = BulkPaymentContract::default();
-        
+
         // User 0 buys storage without specifying beneficiary
         let result = contract.buy_storage(10, None);
-        
+
         assert_eq!(result, storage_cost);
-        
+
         // Verify User 0 (caller) has the credits
         let credits = contract.view_storage_credits(accounts(0));
         assert_eq!(credits.as_yoctonear(), 10);
@@ -1126,20 +1126,20 @@ mod tests {
     #[test]
     fn test_submit_list_uses_beneficiary_credits() {
         let mut context = get_context(accounts(0));
-        
+
         // User 0 buys storage for User 1
         let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
-        
+
         let mut contract = BulkPaymentContract::default();
         contract.buy_storage(10, Some(accounts(1)));
-        
+
         // User 1 submits a list using their credits
         context = get_context(accounts(1));
         context.attached_deposit(NearToken::from_yoctonear(0));
         testing_env!(context.build());
-        
+
         let payments = vec![
             PaymentInput {
                 recipient: accounts(2),
@@ -1150,14 +1150,14 @@ mod tests {
                 amount: U128(2_000_000_000_000_000_000_000_000),
             },
         ];
-        
+
         let list_id = test_list_id("beneficiary_test");
         let returned_id = contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
-        
+
         // Verify credits were deducted from User 1 (10 - 2 = 8)
         let credits = contract.view_storage_credits(accounts(1));
         assert_eq!(credits.as_yoctonear(), 8);
-        
+
         // Verify list was created
         assert_eq!(returned_id, list_id);
         let list = contract.view_list(list_id);
