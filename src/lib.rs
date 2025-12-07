@@ -143,7 +143,11 @@ impl BulkPaymentContract {
     /// # Returns
     /// The total cost paid
     #[payable]
-    pub fn buy_storage(&mut self, num_records: u64, beneficiary_account_id: Option<AccountId>) -> NearToken {
+    pub fn buy_storage(
+        &mut self,
+        num_records: u64,
+        beneficiary_account_id: Option<AccountId>,
+    ) -> NearToken {
         require!(num_records > 0, "Number of records must be greater than 0");
 
         // Calculate the required cost using the shared calculation function
@@ -173,7 +177,8 @@ impl BulkPaymentContract {
                 .checked_add(num_records as u128)
                 .expect("Storage credits overflow"),
         );
-        self.storage_credits.insert(beneficiary.clone(), new_credits);
+        self.storage_credits
+            .insert(beneficiary.clone(), new_credits);
 
         log!(
             "Storage purchased: {} records for {} (beneficiary: {})",
@@ -1151,7 +1156,8 @@ mod tests {
         ];
 
         let list_id = test_list_id("beneficiary_test");
-        let returned_id = contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
+        let returned_id =
+            contract.submit_list(list_id.clone(), "native".to_string(), payments, None);
 
         // Verify credits were deducted from User 1 (10 - 2 = 8)
         let credits = contract.view_storage_credits(accounts(1));
