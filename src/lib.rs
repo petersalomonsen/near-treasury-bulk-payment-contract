@@ -159,8 +159,7 @@ impl BulkPaymentContract {
         );
 
         // Determine who receives the storage credits
-        let caller = env::predecessor_account_id();
-        let beneficiary = beneficiary_account_id.unwrap_or(caller);
+        let beneficiary = beneficiary_account_id.unwrap_or_else(|| env::predecessor_account_id());
 
         // Track storage credits for the beneficiary account
         let current_credits = self
