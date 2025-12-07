@@ -96,8 +96,8 @@ impl BulkPaymentContract {
         Self::default()
     }
 
-    /// Calculate the required deposit for purchasing storage for a given number of records
-    /// This is a view function that does not modify state
+    /// Calculate the required deposit for purchasing storage for a given number of records.
+    /// This is a view function that does not modify state.
     ///
     /// # Arguments
     /// * `num_records` - Number of payment records to calculate storage cost for
@@ -132,8 +132,8 @@ impl BulkPaymentContract {
         NearToken::from_yoctonear(total_cost_yocto)
     }
 
-    /// Purchase storage credits for payment records with 10% markup
-    /// Storage includes: AccountId (max 100 chars) + u128 amount + status fields
+    /// Purchase storage credits for payment records with 10% markup.
+    /// Storage includes: AccountId (max 100 chars) + u128 amount + status fields.
     ///
     /// # Arguments
     /// * `num_records` - Number of payment records to purchase storage for
@@ -159,7 +159,8 @@ impl BulkPaymentContract {
         );
 
         // Determine who receives the storage credits
-        let beneficiary = beneficiary_account_id.unwrap_or_else(|| env::predecessor_account_id());
+        let caller = env::predecessor_account_id();
+        let beneficiary = beneficiary_account_id.unwrap_or(caller);
         
         // Track storage credits for the beneficiary account
         let current_credits = self
