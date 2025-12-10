@@ -70,16 +70,35 @@ Get the status and details of a payment list.
 {
   "success": true,
   "list": {
-    "id": 0,
+    "id": "a1b2c3d4e5f6...",
     "token_id": "native",
     "submitter": "user.test.near",
     "status": "Approved",
     "total_payments": 2,
     "pending_payments": 0,
     "paid_payments": 2,
-    "failed_payments": 0,
     "created_at": 1234567890
   },
+  "error": null
+}
+```
+
+### Get Payment Transactions
+
+```
+GET /list/{id}/transactions
+```
+
+Get the block heights for each completed payment in a list. The block height can be used to look up the transaction on a block explorer like nearblocks.io.
+
+**Response:**
+```json
+{
+  "success": true,
+  "transactions": [
+    {"recipient": "alice.test.near", "amount": "1000000000000000000000000", "block_height": 12345678},
+    {"recipient": "bob.test.near", "amount": "2000000000000000000000000", "block_height": 12345678}
+  ],
   "error": null
 }
 ```
@@ -143,6 +162,8 @@ API_PORT=8080 \
 │  │              │        │  - Polls every 5s    │   │
 │  │  /submit-list│◄──────►│  - Calls payout_batch│   │
 │  │  /list/{id}  │        │  - Tracks progress   │   │
+│  │  /list/{id}/ │        │                      │   │
+│  │  transactions│        │                      │   │
 │  │  /health     │        │                      │   │
 │  └──────────────┘        └──────────────────────┘   │
 │         │                         │                  │
