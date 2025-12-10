@@ -33,8 +33,11 @@ pub struct PaymentRecord {
 #[serde(rename_all = "PascalCase")]
 pub enum PaymentStatus {
     Pending,
-    Paid,
-    Failed { error: String },
+    /// Payment was executed at the specified block height.
+    /// This can be used to find the transaction on-chain.
+    Paid {
+        block_height: u64,
+    },
 }
 
 /// List status
@@ -54,6 +57,14 @@ pub struct PaymentList {
     pub status: ListStatus,
     pub payments: Vec<PaymentRecord>,
     pub created_at: u64,
+}
+
+/// Represents a completed payment transaction with block height for transaction lookup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentTransaction {
+    pub recipient: String,
+    pub amount: String,
+    pub block_height: u64,
 }
 
 // ============================================================================
@@ -326,6 +337,23 @@ impl BulkPaymentClient {
             .fetch_from(&self.network_config)
             .await
             .context("Failed to view payment list")?
+            .data;
+
+        Ok(result)
+    }
+
+    /// Get payment transactions for a list.
+    /// Returns a list of recipients with their block heights where the payment was executed.
+    /// The block height can be used to look up the transaction on a block explorer.
+    pub async fn get_payment_transactions(&self, list_id: &str) -> Result<Vec<PaymentTransaction>> {
+        debug!("Getting payment transactions for list: {}", list_id);
+
+        let result: Vec<PaymentTransaction> = Contract(self.contract_id.parse()?)
+            .call_function("get_payment_transactions", json!({ "list_id": list_id }))?
+            .read_only()
+            .fetch_from(&self.network_config)
+            .await
+            .context("Failed to get payment transactions")?
             .data;
 
         Ok(result)

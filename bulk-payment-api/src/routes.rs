@@ -16,7 +16,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
-use crate::contract::{BulkPaymentClient, ListStatus, PaymentInput, PaymentList, PaymentStatus};
+use crate::contract::{
+    BulkPaymentClient, ListStatus, PaymentInput, PaymentList, PaymentStatus, PaymentTransaction,
+};
 
 /// Compute SHA-256 hash of payment list for verification
 /// This ensures the provided list_id matches the actual payload content
@@ -85,7 +87,6 @@ pub struct PaymentListView {
     pub total_payments: usize,
     pub pending_payments: usize,
     pub paid_payments: usize,
-    pub failed_payments: usize,
     pub created_at: u64,
 }
 
@@ -95,6 +96,14 @@ pub struct HealthResponse {
     pub status: &'static str,
     pub service: &'static str,
     pub version: &'static str,
+}
+
+/// Response for payment transactions endpoint
+#[derive(Debug, Serialize)]
+pub struct TransactionsResponse {
+    pub success: bool,
+    pub transactions: Option<Vec<PaymentTransaction>>,
+    pub error: Option<String>,
 }
 
 impl From<(String, PaymentList)> for PaymentListView {
@@ -113,12 +122,7 @@ impl From<(String, PaymentList)> for PaymentListView {
         let paid = list
             .payments
             .iter()
-            .filter(|p| matches!(p.status, PaymentStatus::Paid))
-            .count();
-        let failed = list
-            .payments
-            .iter()
-            .filter(|p| matches!(p.status, PaymentStatus::Failed { .. }))
+            .filter(|p| matches!(p.status, PaymentStatus::Paid { .. }))
             .count();
 
         Self {
@@ -129,7 +133,6 @@ impl From<(String, PaymentList)> for PaymentListView {
             total_payments: list.payments.len(),
             pending_payments: pending,
             paid_payments: paid,
-            failed_payments: failed,
             created_at: list.created_at,
         }
     }
@@ -141,6 +144,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/submit-list", post(submit_list))
         .route("/list/:id", get(get_list))
+        .route("/list/:id/transactions", get(get_transactions))
         .with_state(state)
 }
 
@@ -170,7 +174,8 @@ async fn submit_list(
     );
 
     // First, verify the list_id matches the SHA-256 hash of the payload
-    let computed_hash = compute_list_hash(&request.submitter_id, &request.token_id, &request.payments);
+    let computed_hash =
+        compute_list_hash(&request.submitter_id, &request.token_id, &request.payments);
     if computed_hash != request.list_id {
         error!(
             "Hash mismatch: provided list_id {} does not match computed hash {}",
@@ -308,6 +313,38 @@ async fn get_list(State(state): State<AppState>, Path(id): Path<String>) -> impl
     }
 }
 
+/// Get payment transactions for a list.
+/// Returns a list of recipients with their block heights where the payment was executed.
+/// The block height can be used to look up the transaction on a block explorer like nearblocks.io.
+async fn get_transactions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    info!("Received get-transactions request for list {}", id);
+
+    match state.client.get_payment_transactions(&id).await {
+        Ok(transactions) => (
+            StatusCode::OK,
+            Json(TransactionsResponse {
+                success: true,
+                transactions: Some(transactions),
+                error: None,
+            }),
+        ),
+        Err(e) => {
+            error!("Failed to get payment transactions for list {}: {}", id, e);
+            (
+                StatusCode::NOT_FOUND,
+                Json(TransactionsResponse {
+                    success: false,
+                    transactions: None,
+                    error: Some(e.to_string()),
+                }),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,13 +356,19 @@ mod tests {
             amount: "100".to_string(),
         }];
         let hash = compute_list_hash("test.near", "native", &payments);
-        println!("Rust JSON: {}", serde_json::json!({
-            "submitter": "test.near",
-            "token_id": "native",
-            "payments": &payments
-        }));
+        println!(
+            "Rust JSON: {}",
+            serde_json::json!({
+                "submitter": "test.near",
+                "token_id": "native",
+                "payments": &payments
+            })
+        );
         println!("Rust Hash: {}", hash);
         // serde_json alphabetizes keys: {"payments":[...],"submitter":"...","token_id":"..."}
-        assert_eq!(hash, "b667f7213a94d9e4f106080e7b3ec2f92d3ad19c71c4d6cb45b2f6f370c59ec4");
+        assert_eq!(
+            hash,
+            "b667f7213a94d9e4f106080e7b3ec2f92d3ad19c71c4d6cb45b2f6f370c59ec4"
+        );
     }
 }
