@@ -47,13 +47,21 @@ This contract enables efficient batch payment processing on NEAR with support fo
 
 ## Contract Functions
 
-### buy_storage(num_records: u64) -> NearToken
+### calculate_storage_cost(num_records: u64) -> NearToken
+Calculates the required deposit for purchasing storage for a given number of records.
+- View function (does not modify state)
+- Returns total cost with 10% markup
+- Useful for determining exact amount before calling buy_storage
+
+### buy_storage(num_records: u64, beneficiary_account_id: Option<AccountId>) -> NearToken
 Purchases storage credits for payment records.
 - Calculates cost with 10% markup
 - Requires exact deposit amount
+- Optional beneficiary_account_id: If provided, credits go to that account; otherwise, caller receives credits
+- Enables system admins to fund treasury accounts with storage credits
 - Returns total cost paid
 
-### submit_list(token_id: String, payments: Vec<PaymentInput>) -> u64
+### submit_list(token_id: String, payments: Vec<PaymentInput>, submitter_id: Option<AccountId>) -> u64
 Submits a new payment list.
 - Verifies sufficient storage credits
 - Deducts credits based on number of payments
@@ -149,7 +157,7 @@ cargo test --test integration_tests test_bulk_btc_intents_payment -- --nocapture
 ```
 
 **Test Coverage**:
-- 11 unit tests covering all core functionality
+- 16 unit tests covering all core functionality including beneficiary storage purchases
 - 9 integration tests with end-to-end workflows
 - All tests use random payment amounts to verify correct routing
 - Comprehensive burn event validation for BTC payments (200 events)
@@ -157,8 +165,15 @@ cargo test --test integration_tests test_bulk_btc_intents_payment -- --nocapture
 ## Usage Example
 
 ```rust
-// 1. Buy storage credits
-let storage_cost = contract.buy_storage(10);
+// 1a. Calculate storage cost (view function)
+let storage_cost = contract.calculate_storage_cost(10);
+// Returns: NearToken representing the exact cost
+
+// 1b. Buy storage credits for yourself
+let cost = contract.buy_storage(10, None);
+
+// 1c. Buy storage credits for another account (admin purchasing on behalf of a treasury)
+let cost = contract.buy_storage(10, Some("treasury.near".parse().unwrap()));
 
 // 2. Submit payment list
 let payments = vec![
@@ -172,7 +187,7 @@ let payments = vec![
     },
 ];
 
-let list_id = contract.submit_list("native".to_string(), payments);
+let list_id = contract.submit_list("native".to_string(), payments, None);
 
 // 3. Approve with exact deposit (3 NEAR total)
 contract.approve_list(list_id);
