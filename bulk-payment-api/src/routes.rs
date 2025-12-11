@@ -87,9 +87,6 @@ pub struct PaymentListView {
     pub total_payments: usize,
     pub pending_payments: usize,
     pub paid_payments: usize,
-    /// Always 0 - failed payments are no longer tracked
-    /// (kept for backwards compatibility with existing API consumers)
-    pub failed_payments: usize,
     pub created_at: u64,
 }
 
@@ -136,7 +133,6 @@ impl From<(String, PaymentList)> for PaymentListView {
             total_payments: list.payments.len(),
             pending_payments: pending,
             paid_payments: paid,
-            failed_payments: 0, // Always 0 - failed payments no longer tracked
             created_at: list.created_at,
         }
     }

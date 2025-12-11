@@ -585,14 +585,131 @@ while (!allPaid && attempts < maxAttempts) {
   const progress = ((list.paid_payments / list.total_payments) * 100).toFixed(1);
   console.log(`📊 Progress: ${list.paid_payments}/${list.total_payments} (${progress}%)`);
   
-  if (list.pending_payments === 0 && list.failed_payments === 0) {
+  // All payments are complete when there are no pending payments
+  if (list.pending_payments === 0) {
     allPaid = true;
   }
 }
 
 assert.equal(allPaid, true, 'All payments must complete within timeout');
 
-// Step 13: Verify recipient balances
+// Step 13: Verify all payments have block_height registered
+console.log('\n🔍 Verifying all payments have block_height...');
+const finalStatus = await viewPaymentList(account, listId);
+
+// Check that every payment has a block_height (status is {Paid: {block_height: N}})
+const paymentsWithBlockHeight = finalStatus.payments.filter(p => 
+  p.status && p.status.Paid && typeof p.status.Paid.block_height === 'number'
+);
+const paymentsWithoutBlockHeight = finalStatus.payments.filter(p => 
+  !p.status || !p.status.Paid || typeof p.status.Paid.block_height !== 'number'
+);
+
+console.log(`📊 Payments with block_height: ${paymentsWithBlockHeight.length}/${finalStatus.payments.length}`);
+
+if (paymentsWithoutBlockHeight.length > 0) {
+  console.log(`❌ Payments without block_height:`);
+  paymentsWithoutBlockHeight.slice(0, 5).forEach(p => {
+    console.log(`   - ${p.recipient}: status = ${JSON.stringify(p.status)}`);
+  });
+}
+
+assert.equal(
+  paymentsWithBlockHeight.length, 
+  CONFIG.NUM_RECIPIENTS, 
+  `All ${CONFIG.NUM_RECIPIENTS} payments must have block_height registered`
+);
+console.log(`✅ All payments have block_height registered`);
+
+// Step 14: Verify payment transactions exist in blocks (sample verification)
+console.log('\n🔗 Verifying payment transactions in blocks...');
+
+// Group payments by block_height to minimize RPC calls
+const paymentsByBlock = new Map();
+for (const payment of finalStatus.payments) {
+  const blockHeight = payment.status.Paid.block_height;
+  if (!paymentsByBlock.has(blockHeight)) {
+    paymentsByBlock.set(blockHeight, []);
+  }
+  paymentsByBlock.get(blockHeight).push(payment);
+}
+
+console.log(`📊 Payments distributed across ${paymentsByBlock.size} blocks`);
+
+// Verify a sample of blocks (up to 5 blocks)
+const blockHeights = Array.from(paymentsByBlock.keys()).slice(0, 5);
+let verifiedTransactions = 0;
+
+for (const blockHeight of blockHeights) {
+  const blockPayments = paymentsByBlock.get(blockHeight);
+  console.log(`\n📦 Checking block ${blockHeight} (${blockPayments.length} payments)...`);
+  
+  try {
+    // Get the block using NEAR connection provider
+    const block = await near.connection.provider.block({ blockId: blockHeight });
+    
+    // Get all chunks in the block
+    const chunkHashes = block.chunks.map(c => c.chunk_hash);
+    
+    // Check each chunk for transactions from the bulk payment contract
+    let foundPayoutTx = false;
+    for (const chunkHash of chunkHashes) {
+      try {
+        const chunk = await near.connection.provider.chunk({ chunkId: chunkHash });
+        
+        // Look for transactions calling payout_batch on the bulk payment contract
+        const payoutTxs = chunk.transactions.filter(tx => 
+          tx.receiver_id === CONFIG.BULK_PAYMENT_CONTRACT_ID
+        );
+        
+        if (payoutTxs.length > 0) {
+          foundPayoutTx = true;
+          console.log(`   ✅ Found ${payoutTxs.length} transaction(s) to bulk payment contract in chunk ${chunkHash.substring(0, 16)}...`);
+          
+          // Verify transaction outcomes (receipts) for successful execution
+          for (const tx of payoutTxs) {
+            const txHash = tx.hash;
+            const senderId = tx.signer_id;
+            
+            try {
+              // Get transaction status to verify success
+              const txStatus = await near.connection.provider.txStatus(txHash, senderId);
+              
+              // Check for any failed receipts
+              const failedReceipts = txStatus.receipts_outcome.filter(
+                ro => ro.outcome.status && ro.outcome.status.Failure
+              );
+              
+              if (failedReceipts.length > 0) {
+                console.log(`   ❌ Transaction ${txHash.substring(0, 16)}... has ${failedReceipts.length} failed receipt(s)`);
+                failedReceipts.forEach(fr => {
+                  console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
+                });
+              } else {
+                console.log(`   ✅ Transaction ${txHash.substring(0, 16)}... succeeded with ${txStatus.receipts_outcome.length} receipt(s)`);
+                verifiedTransactions++;
+              }
+            } catch (txErr) {
+              console.log(`   ⚠️ Could not verify transaction ${txHash.substring(0, 16)}...: ${txErr.message}`);
+            }
+          }
+        }
+      } catch (chunkErr) {
+        console.log(`   ⚠️ Could not fetch chunk ${chunkHash.substring(0, 16)}...: ${chunkErr.message}`);
+      }
+    }
+    
+    if (!foundPayoutTx) {
+      console.log(`   ⚠️ No transactions to bulk payment contract found in block ${blockHeight}`);
+    }
+  } catch (blockErr) {
+    console.log(`   ⚠️ Could not fetch block ${blockHeight}: ${blockErr.message}`);
+  }
+}
+
+console.log(`\n✅ Verified ${verifiedTransactions} transaction(s) in ${blockHeights.length} sample block(s)`);
+
+// Step 15: Verify recipient balances
 console.log('\n🔍 Verifying recipient balances...');
 const sampleRecipients = payments.slice(0, 10); // Check first 10 recipients
 const balances = await checkRecipientBalances(near, sampleRecipients);
@@ -607,32 +724,24 @@ for (const balance of balances) {
   }
 }
 
-// Step 14: Final verification
+// Step 16: Final verification
 console.log('\n=====================================');
 console.log('📊 Test Summary');
 console.log('=====================================');
 console.log(`DAO Created: ${daoAccountId}`);
 console.log(`Payment List ID: ${listId}`);
 console.log(`Total Recipients: ${CONFIG.NUM_RECIPIENTS}`);
-console.log(`Sample Recipients Verified: ${successCount}/${sampleRecipients.length}`);
-
-const finalStatus = await viewPaymentList(account, listId);
-const paidCount = finalStatus.payments.filter(p => p.status === 'Paid').length;
-const pendingCount = finalStatus.payments.filter(p => p.status === 'Pending').length;
-const failedCount = finalStatus.payments.filter(p => p.status && p.status.Failed).length;
-
-console.log(`Paid: ${paidCount}`);
-console.log(`Pending: ${pendingCount}`);
-console.log(`Failed: ${failedCount}`);
+console.log(`Payments with block_height: ${paymentsWithBlockHeight.length}`);
+console.log(`Unique blocks used: ${paymentsByBlock.size}`);
+console.log(`Sample blocks verified: ${blockHeights.length}`);
+console.log(`Sample recipients verified: ${successCount}/${sampleRecipients.length}`);
 console.log('=====================================\n');
 
 // Hard assertions
-assert.equal(paidCount, CONFIG.NUM_RECIPIENTS, `All ${CONFIG.NUM_RECIPIENTS} payments must be Paid`);
-assert.equal(pendingCount, 0, 'No payments should be Pending');
-assert.equal(failedCount, 0, 'No payments should be Failed');
+assert.equal(paymentsWithBlockHeight.length, CONFIG.NUM_RECIPIENTS, `All ${CONFIG.NUM_RECIPIENTS} payments must have block_height`);
 assert.equal(successCount, sampleRecipients.length, 'All sample recipients must have received their tokens');
 
-console.log('🎉 Test PASSED: All payments completed successfully!');
+console.log('🎉 Test PASSED: All payments completed successfully with block_height tracking!');
 process.exit(0);
 
 } catch (error) {
