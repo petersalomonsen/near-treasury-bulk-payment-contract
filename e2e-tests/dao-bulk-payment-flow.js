@@ -24,6 +24,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as nearAPI from 'near-api-js';
+import { JsonRpcProvider } from '@near-js/jsonrpc-client';
 const { connect, keyStores, KeyPair, utils } = nearAPI;
 
 // ============================================================================
@@ -624,6 +625,9 @@ console.log(`✅ All payments have block_height registered`);
 // Step 14: Verify payment transactions exist in blocks (sample verification)
 console.log('\n🔗 Verifying payment transactions in blocks...');
 
+// Create JSON-RPC provider for direct RPC calls
+const rpcProvider = new JsonRpcProvider({ url: CONFIG.SANDBOX_RPC_URL });
+
 // Group payments by block_height to minimize RPC calls
 const paymentsByBlock = new Map();
 for (const payment of finalStatus.payments) {
@@ -646,22 +650,8 @@ for (const blockHeight of blockHeights) {
   const blockPayments = paymentsByBlock.get(blockHeight);
   console.log(`\n📦 Checking block ${blockHeight} (${blockPayments.length} payments)...`);
   
-  // Get the block using NEAR JSON-RPC (query by block height)
-  const blockResponse = await fetch(CONFIG.SANDBOX_RPC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 'block-query',
-      method: 'block',
-      params: { block_id: Number(blockHeight) }
-    })
-  });
-  const blockResult = await blockResponse.json();
-  if (blockResult.error) {
-    throw new Error(`Failed to fetch block ${blockHeight}: ${JSON.stringify(blockResult.error)}`);
-  }
-  const block = blockResult.result;
+  // Get the block using JSON-RPC provider
+  const block = await rpcProvider.block({ blockId: Number(blockHeight) });
   
   // Get all chunks in the block
   const chunkHashes = block.chunks.map(c => c.chunk_hash);
@@ -669,22 +659,8 @@ for (const blockHeight of blockHeights) {
   // Check each chunk for transactions from the bulk payment contract
   let foundPayoutTx = false;
   for (const chunkHash of chunkHashes) {
-    // Get chunk using JSON-RPC
-    const chunkResponse = await fetch(CONFIG.SANDBOX_RPC_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 'chunk-query',
-        method: 'chunk',
-        params: { chunk_id: chunkHash }
-      })
-    });
-    const chunkResult = await chunkResponse.json();
-    if (chunkResult.error) {
-      throw new Error(`Failed to fetch chunk ${chunkHash}: ${JSON.stringify(chunkResult.error)}`);
-    }
-    const chunk = chunkResult.result;
+    // Get chunk using JSON-RPC provider
+    const chunk = await rpcProvider.chunk({ chunkId: chunkHash });
     
     // Look for transactions calling payout_batch on the bulk payment contract
     const payoutTxs = chunk.transactions.filter(tx => 
@@ -700,22 +676,8 @@ for (const blockHeight of blockHeights) {
         const txHash = tx.hash;
         const senderId = tx.signer_id;
         
-        // Get transaction status using JSON-RPC
-        const txStatusResponse = await fetch(CONFIG.SANDBOX_RPC_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 'tx-status',
-            method: 'tx',
-            params: [txHash, senderId]
-          })
-        });
-        const txStatusResult = await txStatusResponse.json();
-        if (txStatusResult.error) {
-          throw new Error(`Failed to get tx status ${txHash}: ${JSON.stringify(txStatusResult.error)}`);
-        }
-        const txStatus = txStatusResult.result;
+        // Get transaction status using JSON-RPC provider
+        const txStatus = await rpcProvider.txStatus(txHash, senderId);
         
         // Check for any failed receipts
         const txFailedReceipts = txStatus.receipts_outcome.filter(
