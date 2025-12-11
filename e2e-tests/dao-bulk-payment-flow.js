@@ -639,75 +639,82 @@ console.log(`📊 Payments distributed across ${paymentsByBlock.size} blocks`);
 // Verify a sample of blocks (up to 5 blocks)
 const blockHeights = Array.from(paymentsByBlock.keys()).slice(0, 5);
 let verifiedTransactions = 0;
+let failedReceipts = [];
+let transactionErrors = [];
 
 for (const blockHeight of blockHeights) {
   const blockPayments = paymentsByBlock.get(blockHeight);
   console.log(`\n📦 Checking block ${blockHeight} (${blockPayments.length} payments)...`);
   
-  try {
-    // Get the block using NEAR connection provider
-    const block = await near.connection.provider.block({ blockId: blockHeight });
+  // Get the block using NEAR connection provider
+  const block = await near.connection.provider.block({ blockId: blockHeight });
+  
+  // Get all chunks in the block
+  const chunkHashes = block.chunks.map(c => c.chunk_hash);
+  
+  // Check each chunk for transactions from the bulk payment contract
+  let foundPayoutTx = false;
+  for (const chunkHash of chunkHashes) {
+    const chunk = await near.connection.provider.chunk({ chunkId: chunkHash });
     
-    // Get all chunks in the block
-    const chunkHashes = block.chunks.map(c => c.chunk_hash);
+    // Look for transactions calling payout_batch on the bulk payment contract
+    const payoutTxs = chunk.transactions.filter(tx => 
+      tx.receiver_id === CONFIG.BULK_PAYMENT_CONTRACT_ID
+    );
     
-    // Check each chunk for transactions from the bulk payment contract
-    let foundPayoutTx = false;
-    for (const chunkHash of chunkHashes) {
-      try {
-        const chunk = await near.connection.provider.chunk({ chunkId: chunkHash });
+    if (payoutTxs.length > 0) {
+      foundPayoutTx = true;
+      console.log(`   ✅ Found ${payoutTxs.length} transaction(s) to bulk payment contract in chunk ${chunkHash.substring(0, 16)}...`);
+      
+      // Verify transaction outcomes (receipts) for successful execution
+      for (const tx of payoutTxs) {
+        const txHash = tx.hash;
+        const senderId = tx.signer_id;
         
-        // Look for transactions calling payout_batch on the bulk payment contract
-        const payoutTxs = chunk.transactions.filter(tx => 
-          tx.receiver_id === CONFIG.BULK_PAYMENT_CONTRACT_ID
+        // Get transaction status to verify success
+        const txStatus = await near.connection.provider.txStatus(txHash, senderId);
+        
+        // Check for any failed receipts
+        const txFailedReceipts = txStatus.receipts_outcome.filter(
+          ro => ro.outcome.status && ro.outcome.status.Failure
         );
         
-        if (payoutTxs.length > 0) {
-          foundPayoutTx = true;
-          console.log(`   ✅ Found ${payoutTxs.length} transaction(s) to bulk payment contract in chunk ${chunkHash.substring(0, 16)}...`);
-          
-          // Verify transaction outcomes (receipts) for successful execution
-          for (const tx of payoutTxs) {
-            const txHash = tx.hash;
-            const senderId = tx.signer_id;
-            
-            try {
-              // Get transaction status to verify success
-              const txStatus = await near.connection.provider.txStatus(txHash, senderId);
-              
-              // Check for any failed receipts
-              const failedReceipts = txStatus.receipts_outcome.filter(
-                ro => ro.outcome.status && ro.outcome.status.Failure
-              );
-              
-              if (failedReceipts.length > 0) {
-                console.log(`   ❌ Transaction ${txHash.substring(0, 16)}... has ${failedReceipts.length} failed receipt(s)`);
-                failedReceipts.forEach(fr => {
-                  console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
-                });
-              } else {
-                console.log(`   ✅ Transaction ${txHash.substring(0, 16)}... succeeded with ${txStatus.receipts_outcome.length} receipt(s)`);
-                verifiedTransactions++;
-              }
-            } catch (txErr) {
-              console.log(`   ⚠️ Could not verify transaction ${txHash.substring(0, 16)}...: ${txErr.message}`);
-            }
-          }
+        if (txFailedReceipts.length > 0) {
+          console.log(`   ❌ Transaction ${txHash.substring(0, 16)}... has ${txFailedReceipts.length} failed receipt(s)`);
+          txFailedReceipts.forEach(fr => {
+            console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
+            failedReceipts.push({
+              txHash,
+              blockHeight,
+              failure: fr.outcome.status.Failure
+            });
+          });
+        } else {
+          console.log(`   ✅ Transaction ${txHash.substring(0, 16)}... succeeded with ${txStatus.receipts_outcome.length} receipt(s)`);
+          verifiedTransactions++;
         }
-      } catch (chunkErr) {
-        console.log(`   ⚠️ Could not fetch chunk ${chunkHash.substring(0, 16)}...: ${chunkErr.message}`);
       }
     }
-    
-    if (!foundPayoutTx) {
-      console.log(`   ⚠️ No transactions to bulk payment contract found in block ${blockHeight}`);
-    }
-  } catch (blockErr) {
-    console.log(`   ⚠️ Could not fetch block ${blockHeight}: ${blockErr.message}`);
+  }
+  
+  if (!foundPayoutTx) {
+    const error = `No transactions to bulk payment contract found in block ${blockHeight}`;
+    console.log(`   ❌ ${error}`);
+    transactionErrors.push({ blockHeight, error });
   }
 }
 
-console.log(`\n✅ Verified ${verifiedTransactions} transaction(s) in ${blockHeights.length} sample block(s)`);
+console.log(`\n📊 Transaction verification summary:`);
+console.log(`   Verified transactions: ${verifiedTransactions}`);
+console.log(`   Failed receipts: ${failedReceipts.length}`);
+console.log(`   Transaction errors: ${transactionErrors.length}`);
+
+// Hard assertions for transaction verification
+assert.equal(failedReceipts.length, 0, `Found ${failedReceipts.length} failed receipt(s): ${JSON.stringify(failedReceipts)}`);
+assert.equal(transactionErrors.length, 0, `Found ${transactionErrors.length} transaction error(s): ${JSON.stringify(transactionErrors)}`);
+assert.ok(verifiedTransactions > 0, 'Must have at least one verified transaction');
+
+console.log(`✅ All ${verifiedTransactions} transaction(s) in ${blockHeights.length} sample block(s) verified successfully`);
 
 // Step 15: Verify recipient balances
 console.log('\n🔍 Verifying recipient balances...');
