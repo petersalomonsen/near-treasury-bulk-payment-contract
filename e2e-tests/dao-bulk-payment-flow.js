@@ -570,11 +570,11 @@ assert.equal(listStatus.payments.length, CONFIG.NUM_RECIPIENTS, `Must have ${CON
 
 // Step 12: Wait for payout processing (background worker processes approved lists)
 console.log('\n⏳ Waiting for payout processing...');
-let allPaid = false;
+let allProcessed = false;
 let attempts = 0;
 const maxAttempts = 60; // 5 minutes at 5-second intervals
 
-while (!allPaid && attempts < maxAttempts) {
+while (!allProcessed && attempts < maxAttempts) {
   await sleep(5000);
   attempts++;
   
@@ -582,16 +582,16 @@ while (!allPaid && attempts < maxAttempts) {
   assert.equal(currentStatus.success, true, `Must be able to get list status: ${currentStatus.error}`);
   
   const { list } = currentStatus;
-  const progress = ((list.paid_payments / list.total_payments) * 100).toFixed(1);
-  console.log(`📊 Progress: ${list.paid_payments}/${list.total_payments} (${progress}%)`);
+  const progress = ((list.processed_payments / list.total_payments) * 100).toFixed(1);
+  console.log(`📊 Progress: ${list.processed_payments}/${list.total_payments} (${progress}%)`);
   
   // All payments are complete when there are no pending payments
   if (list.pending_payments === 0) {
-    allPaid = true;
+    allProcessed = true;
   }
 }
 
-assert.equal(allPaid, true, 'All payments must complete within timeout');
+assert.equal(allProcessed, true, 'All payments must complete within timeout');
 
 // Step 13: Verify all payments have block_height registered
 console.log('\n🔍 Verifying all payments have block_height...');

@@ -76,7 +76,7 @@ Get the status and details of a payment list.
     "status": "Approved",
     "total_payments": 2,
     "pending_payments": 0,
-    "paid_payments": 2,
+    "processed_payments": 2,
     "created_at": 1234567890
   },
   "error": null

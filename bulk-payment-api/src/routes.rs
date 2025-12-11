@@ -86,7 +86,7 @@ pub struct PaymentListView {
     pub status: String,
     pub total_payments: usize,
     pub pending_payments: usize,
-    pub paid_payments: usize,
+    pub processed_payments: usize,
     pub created_at: u64,
 }
 
@@ -119,7 +119,7 @@ impl From<(String, PaymentList)> for PaymentListView {
             .iter()
             .filter(|p| matches!(p.status, PaymentStatus::Pending))
             .count();
-        let paid = list
+        let processed = list
             .payments
             .iter()
             .filter(|p| matches!(p.status, PaymentStatus::Paid { .. }))
@@ -132,7 +132,7 @@ impl From<(String, PaymentList)> for PaymentListView {
             status: status.to_string(),
             total_payments: list.payments.len(),
             pending_payments: pending,
-            paid_payments: paid,
+            processed_payments: processed,
             created_at: list.created_at,
         }
     }
