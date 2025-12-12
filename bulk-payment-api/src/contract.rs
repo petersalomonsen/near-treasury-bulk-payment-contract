@@ -167,6 +167,11 @@ impl BulkPaymentClient {
         Ok(Self::new(rpc_url, contract_id, signer))
     }
 
+    /// Get the contract ID
+    pub fn get_contract_id(&self) -> &str {
+        &self.contract_id
+    }
+
     /// Verify that a pending DAO proposal exists with the given list_id (hash) as reference.
     ///
     /// This security check ensures that only authorized DAO members can trigger list storage

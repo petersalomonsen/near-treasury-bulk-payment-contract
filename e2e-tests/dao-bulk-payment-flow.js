@@ -24,7 +24,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as nearAPI from 'near-api-js';
-import { NearRpcClient, block as rpcBlock, chunk as rpcChunk, tx as rpcTx } from '@near-js/jsonrpc-client';
+import { NearRpcClient, tx as rpcTx } from '@near-js/jsonrpc-client';
 const { connect, keyStores, KeyPair, utils } = nearAPI;
 
 // ============================================================================
@@ -622,90 +622,56 @@ assert.equal(
 );
 console.log(`✅ All payments have block_height registered`);
 
-// Step 14: Verify payment transactions exist in blocks (sample verification)
-console.log('\n🔗 Verifying payment transactions in blocks...');
+// Step 14: Verify payment transactions using the API endpoint
+console.log('\n🔗 Verifying payment transactions via API...');
 
-// Create JSON-RPC client for direct RPC calls
-const rpcClient = new NearRpcClient({ endpoint: CONFIG.SANDBOX_RPC_URL });
-
-// Group payments by block_height to minimize RPC calls
-const paymentsByBlock = new Map();
-for (const payment of finalStatus.payments) {
-  const blockHeight = payment.status.Paid.block_height;
-  if (!paymentsByBlock.has(blockHeight)) {
-    paymentsByBlock.set(blockHeight, []);
-  }
-  paymentsByBlock.get(blockHeight).push(payment);
-}
-
-console.log(`📊 Payments distributed across ${paymentsByBlock.size} blocks`);
-
-// Verify a sample of blocks (up to 5 blocks)
-const blockHeights = Array.from(paymentsByBlock.keys()).slice(0, 5);
+// Sample 10 recipients to verify their transaction hashes
+const samplePayments = finalStatus.payments.slice(0, 10);
 let verifiedTransactions = 0;
 let failedReceipts = [];
 let transactionErrors = [];
 
-for (const blockHeight of blockHeights) {
-  const blockPayments = paymentsByBlock.get(blockHeight);
-  console.log(`\n📦 Checking block ${blockHeight} (${blockPayments.length} payments)...`);
+for (const payment of samplePayments) {
+  const recipient = payment.recipient;
+  const blockHeight = payment.status.Paid.block_height;
   
-  // Get the block using JSON-RPC client
-  const blockData = await rpcBlock(rpcClient, { blockId: Number(blockHeight) });
+  console.log(`\n📦 Checking transaction for ${recipient.substring(0, 20)}... (block ${blockHeight})`);
   
-  // Get all chunks in the block
-  const chunkHashes = blockData.chunks.map(c => c.chunkHash);
+  // Use the new API endpoint to get the transaction hash
+  const txResponse = await apiRequest(`/list/${listId}/transaction/${recipient}`);
   
-  // Check each chunk for transactions from the bulk payment contract
-  let foundPayoutTx = false;
-  for (const currentChunkHash of chunkHashes) {
-    // Get chunk using JSON-RPC client
-    const chunkData = await rpcChunk(rpcClient, { chunkId: currentChunkHash });
-    
-    // Look for transactions calling payout_batch on the bulk payment contract
-    const payoutTxs = (chunkData.transactions || []).filter(tx => 
-      tx.receiverId === CONFIG.BULK_PAYMENT_CONTRACT_ID
-    );
-    
-    if (payoutTxs.length > 0) {
-      foundPayoutTx = true;
-      console.log(`   ✅ Found ${payoutTxs.length} transaction(s) to bulk payment contract in chunk ${currentChunkHash.substring(0, 16)}...`);
-      
-      // Verify transaction outcomes (receipts) for successful execution
-      for (const tx of payoutTxs) {
-        const txHash = tx.hash;
-        const senderAccountId = tx.signerId;
-        
-        // Get transaction status using JSON-RPC client
-        const txStatus = await rpcTx(rpcClient, { txHash, senderAccountId });
-        
-        // Check for any failed receipts
-        const txFailedReceipts = txStatus.receiptsOutcome.filter(
-          ro => ro.outcome.status && ro.outcome.status.Failure
-        );
-        
-        if (txFailedReceipts.length > 0) {
-          console.log(`   ❌ Transaction ${txHash.substring(0, 16)}... has ${txFailedReceipts.length} failed receipt(s)`);
-          txFailedReceipts.forEach(fr => {
-            console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
-            failedReceipts.push({
-              txHash,
-              blockHeight,
-              failure: fr.outcome.status.Failure
-            });
-          });
-        } else {
-          console.log(`   ✅ Transaction ${txHash.substring(0, 16)}... succeeded with ${txStatus.receiptsOutcome.length} receipt(s)`);
-          verifiedTransactions++;
-        }
-      }
-    }
+  if (!txResponse.success) {
+    console.log(`   ❌ API error: ${txResponse.error}`);
+    transactionErrors.push({ recipient, blockHeight, error: txResponse.error });
+    continue;
   }
   
-  if (!foundPayoutTx) {
-    const error = `No transactions to bulk payment contract found in block ${blockHeight}`;
-    console.log(`   ❌ ${error}`);
-    transactionErrors.push({ blockHeight, error });
+  const txHash = txResponse.transaction_hash;
+  console.log(`   ✅ Transaction hash: ${txHash.substring(0, 16)}...`);
+  
+  // Verify the transaction status using JSON-RPC client
+  const rpcClient = new NearRpcClient({ endpoint: CONFIG.SANDBOX_RPC_URL });
+  const txStatus = await rpcTx(rpcClient, { txHash, senderAccountId: CONFIG.BULK_PAYMENT_CONTRACT_ID });
+  
+  // Check for any failed receipts
+  const txFailedReceipts = txStatus.receiptsOutcome.filter(
+    ro => ro.outcome.status && ro.outcome.status.Failure
+  );
+  
+  if (txFailedReceipts.length > 0) {
+    console.log(`   ❌ Transaction has ${txFailedReceipts.length} failed receipt(s)`);
+    txFailedReceipts.forEach(fr => {
+      console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
+      failedReceipts.push({
+        txHash,
+        recipient,
+        blockHeight,
+        failure: fr.outcome.status.Failure
+      });
+    });
+  } else {
+    console.log(`   ✅ Transaction succeeded with ${txStatus.receiptsOutcome.length} receipt(s)`);
+    verifiedTransactions++;
   }
 }
 
@@ -719,12 +685,12 @@ assert.equal(failedReceipts.length, 0, `Found ${failedReceipts.length} failed re
 assert.equal(transactionErrors.length, 0, `Found ${transactionErrors.length} transaction error(s): ${JSON.stringify(transactionErrors)}`);
 assert.ok(verifiedTransactions > 0, 'Must have at least one verified transaction');
 
-console.log(`✅ All ${verifiedTransactions} transaction(s) in ${blockHeights.length} sample block(s) verified successfully`);
+console.log(`✅ All ${verifiedTransactions} transaction(s) verified successfully via API`);
 
 // Step 15: Verify recipient balances
 console.log('\n🔍 Verifying recipient balances...');
-const sampleRecipients = payments.slice(0, 10); // Check first 10 recipients
-const balances = await checkRecipientBalances(near, sampleRecipients);
+const sampleRecipientsForBalance = payments.slice(0, 10); // Check first 10 recipients
+const balances = await checkRecipientBalances(near, sampleRecipientsForBalance);
 
 let successCount = 0;
 for (const balance of balances) {
@@ -744,14 +710,13 @@ console.log(`DAO Created: ${daoAccountId}`);
 console.log(`Payment List ID: ${listId}`);
 console.log(`Total Recipients: ${CONFIG.NUM_RECIPIENTS}`);
 console.log(`Payments with block_height: ${paymentsWithBlockHeight.length}`);
-console.log(`Unique blocks used: ${paymentsByBlock.size}`);
-console.log(`Sample blocks verified: ${blockHeights.length}`);
-console.log(`Sample recipients verified: ${successCount}/${sampleRecipients.length}`);
+console.log(`Transactions verified via API: ${verifiedTransactions}`);
+console.log(`Sample recipients verified: ${successCount}/${sampleRecipientsForBalance.length}`);
 console.log('=====================================\n');
 
 // Hard assertions
 assert.equal(paymentsWithBlockHeight.length, CONFIG.NUM_RECIPIENTS, `All ${CONFIG.NUM_RECIPIENTS} payments must have block_height`);
-assert.equal(successCount, sampleRecipients.length, 'All sample recipients must have received their tokens');
+assert.equal(successCount, sampleRecipientsForBalance.length, 'All sample recipients must have received their tokens');
 
 console.log('🎉 Test PASSED: All payments completed successfully with block_height tracking!');
 process.exit(0);

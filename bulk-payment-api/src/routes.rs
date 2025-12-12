@@ -49,6 +49,8 @@ pub struct AppState {
     pub client: BulkPaymentClient,
     /// Track submitted lists for the worker to process
     pub pending_lists: Arc<RwLock<Vec<String>>>,
+    /// RPC URL for making direct blockchain queries
+    pub rpc_url: String,
 }
 
 /// Request body for submitting a payment list
@@ -106,6 +108,24 @@ pub struct TransactionsResponse {
     pub error: Option<String>,
 }
 
+/// Response for single payment transaction hash lookup
+#[derive(Debug, Serialize)]
+pub struct TransactionHashResponse {
+    pub success: bool,
+    pub recipient: Option<String>,
+    pub amount: Option<String>,
+    pub block_height: Option<u64>,
+    pub transaction_hash: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Path parameters for transaction hash lookup
+#[derive(Debug, Deserialize)]
+pub struct TransactionHashParams {
+    pub id: String,
+    pub recipient: String,
+}
+
 impl From<(String, PaymentList)> for PaymentListView {
     fn from((id, list): (String, PaymentList)) -> Self {
         let status = match list.status {
@@ -145,6 +165,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/submit-list", post(submit_list))
         .route("/list/:id", get(get_list))
         .route("/list/:id/transactions", get(get_transactions))
+        .route(
+            "/list/:id/transaction/:recipient",
+            get(get_transaction_hash),
+        )
         .with_state(state)
 }
 
@@ -343,6 +367,181 @@ async fn get_transactions(
             )
         }
     }
+}
+
+/// Get the transaction hash for a single payment.
+/// Looks up the block by height, finds the transaction to the bulk payment contract,
+/// and returns the transaction hash.
+async fn get_transaction_hash(
+    State(state): State<AppState>,
+    Path(params): Path<TransactionHashParams>,
+) -> impl IntoResponse {
+    info!(
+        "Received get-transaction-hash request for list {}, recipient {}",
+        params.id, params.recipient
+    );
+
+    // First, get the payment transactions to find the block_height for this recipient
+    let transactions = match state.client.get_payment_transactions(&params.id).await {
+        Ok(txs) => txs,
+        Err(e) => {
+            error!(
+                "Failed to get payment transactions for list {}: {}",
+                params.id, e
+            );
+            return (
+                StatusCode::NOT_FOUND,
+                Json(TransactionHashResponse {
+                    success: false,
+                    recipient: None,
+                    amount: None,
+                    block_height: None,
+                    transaction_hash: None,
+                    error: Some(format!("Failed to get payment transactions: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Find the transaction for this recipient
+    let payment = match transactions.iter().find(|t| t.recipient == params.recipient) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(TransactionHashResponse {
+                    success: false,
+                    recipient: None,
+                    amount: None,
+                    block_height: None,
+                    transaction_hash: None,
+                    error: Some(format!(
+                        "Recipient {} not found in list {}",
+                        params.recipient, params.id
+                    )),
+                }),
+            );
+        }
+    };
+
+    // Look up the transaction hash by querying the block
+    let contract_id = state.client.get_contract_id();
+    match lookup_transaction_hash(&state.rpc_url, payment.block_height, &contract_id).await {
+        Ok(tx_hash) => (
+            StatusCode::OK,
+            Json(TransactionHashResponse {
+                success: true,
+                recipient: Some(payment.recipient.clone()),
+                amount: Some(payment.amount.clone()),
+                block_height: Some(payment.block_height),
+                transaction_hash: Some(tx_hash),
+                error: None,
+            }),
+        ),
+        Err(e) => {
+            error!(
+                "Failed to lookup transaction hash for recipient {} in block {}: {}",
+                params.recipient, payment.block_height, e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(TransactionHashResponse {
+                    success: false,
+                    recipient: Some(payment.recipient.clone()),
+                    amount: Some(payment.amount.clone()),
+                    block_height: Some(payment.block_height),
+                    transaction_hash: None,
+                    error: Some(format!("Failed to lookup transaction hash: {}", e)),
+                }),
+            )
+        }
+    }
+}
+
+/// Look up the transaction hash by querying the block and finding the transaction
+/// to the bulk payment contract.
+async fn lookup_transaction_hash(
+    rpc_url: &str,
+    block_height: u64,
+    contract_id: &str,
+) -> Result<String, anyhow::Error> {
+    let client = reqwest::Client::new();
+
+    // Query the block by height
+    let block_response: serde_json::Value = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "block-query",
+            "method": "block",
+            "params": { "block_id": block_height }
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    if let Some(error) = block_response.get("error") {
+        anyhow::bail!("RPC error getting block: {}", error);
+    }
+
+    let block = block_response
+        .get("result")
+        .ok_or_else(|| anyhow::anyhow!("No result in block response"))?;
+
+    // Get chunk hashes from the block
+    let chunks = block
+        .get("chunks")
+        .and_then(|c| c.as_array())
+        .ok_or_else(|| anyhow::anyhow!("No chunks in block"))?;
+
+    // Search each chunk for transactions to the bulk payment contract
+    for chunk_info in chunks {
+        let chunk_hash = chunk_info
+            .get("chunk_hash")
+            .and_then(|h| h.as_str())
+            .ok_or_else(|| anyhow::anyhow!("No chunk_hash in chunk info"))?;
+
+        // Query the chunk
+        let chunk_response: serde_json::Value = client
+            .post(rpc_url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "chunk-query",
+                "method": "chunk",
+                "params": { "chunk_id": chunk_hash }
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if let Some(error) = chunk_response.get("error") {
+            anyhow::bail!("RPC error getting chunk: {}", error);
+        }
+
+        let chunk = chunk_response
+            .get("result")
+            .ok_or_else(|| anyhow::anyhow!("No result in chunk response"))?;
+
+        // Look for transactions to the bulk payment contract
+        if let Some(transactions) = chunk.get("transactions").and_then(|t| t.as_array()) {
+            for tx in transactions {
+                let receiver_id = tx.get("receiver_id").and_then(|r| r.as_str());
+                if receiver_id == Some(contract_id) {
+                    if let Some(hash) = tx.get("hash").and_then(|h| h.as_str()) {
+                        return Ok(hash.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "No transaction to {} found in block {}",
+        contract_id,
+        block_height
+    )
 }
 
 #[cfg(test)]

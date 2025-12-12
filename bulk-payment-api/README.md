@@ -103,6 +103,26 @@ Get the block heights for each completed payment in a list. The block height can
 }
 ```
 
+### Get Transaction Hash for a Single Payment
+
+```
+GET /list/{id}/transaction/{recipient}
+```
+
+Get the transaction hash for a specific recipient's payment. This endpoint looks up the block by height and finds the transaction to the bulk payment contract.
+
+**Response:**
+```json
+{
+  "success": true,
+  "recipient": "alice.test.near",
+  "amount": "1000000000000000000000000",
+  "block_height": 12345678,
+  "transaction_hash": "ABC123...",
+  "error": null
+}
+```
+
 ## Configuration
 
 The service is configured via environment variables:

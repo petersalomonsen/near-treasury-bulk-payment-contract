@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
     let app_state = AppState {
         client: client.clone(),
         pending_lists: pending_lists.clone(),
+        rpc_url: rpc_url.clone(),
     };
 
     // Create the router with CORS and tracing
