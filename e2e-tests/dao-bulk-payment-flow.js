@@ -24,7 +24,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as nearAPI from 'near-api-js';
-import { JsonRpcProvider } from '@near-js/jsonrpc-client';
+import { NearRpcClient, block as rpcBlock, chunk as rpcChunk, tx as rpcTx } from '@near-js/jsonrpc-client';
 const { connect, keyStores, KeyPair, utils } = nearAPI;
 
 // ============================================================================
@@ -625,8 +625,8 @@ console.log(`✅ All payments have block_height registered`);
 // Step 14: Verify payment transactions exist in blocks (sample verification)
 console.log('\n🔗 Verifying payment transactions in blocks...');
 
-// Create JSON-RPC provider for direct RPC calls
-const rpcProvider = new JsonRpcProvider({ url: CONFIG.SANDBOX_RPC_URL });
+// Create JSON-RPC client for direct RPC calls
+const rpcClient = new NearRpcClient({ endpoint: CONFIG.SANDBOX_RPC_URL });
 
 // Group payments by block_height to minimize RPC calls
 const paymentsByBlock = new Map();
@@ -650,37 +650,37 @@ for (const blockHeight of blockHeights) {
   const blockPayments = paymentsByBlock.get(blockHeight);
   console.log(`\n📦 Checking block ${blockHeight} (${blockPayments.length} payments)...`);
   
-  // Get the block using JSON-RPC provider
-  const block = await rpcProvider.block({ blockId: Number(blockHeight) });
+  // Get the block using JSON-RPC client
+  const blockData = await rpcBlock(rpcClient, { blockId: Number(blockHeight) });
   
   // Get all chunks in the block
-  const chunkHashes = block.chunks.map(c => c.chunk_hash);
+  const chunkHashes = blockData.chunks.map(c => c.chunkHash);
   
   // Check each chunk for transactions from the bulk payment contract
   let foundPayoutTx = false;
-  for (const chunkHash of chunkHashes) {
-    // Get chunk using JSON-RPC provider
-    const chunk = await rpcProvider.chunk({ chunkId: chunkHash });
+  for (const currentChunkHash of chunkHashes) {
+    // Get chunk using JSON-RPC client
+    const chunkData = await rpcChunk(rpcClient, { chunkId: currentChunkHash });
     
     // Look for transactions calling payout_batch on the bulk payment contract
-    const payoutTxs = chunk.transactions.filter(tx => 
-      tx.receiver_id === CONFIG.BULK_PAYMENT_CONTRACT_ID
+    const payoutTxs = (chunkData.transactions || []).filter(tx => 
+      tx.receiverId === CONFIG.BULK_PAYMENT_CONTRACT_ID
     );
     
     if (payoutTxs.length > 0) {
       foundPayoutTx = true;
-      console.log(`   ✅ Found ${payoutTxs.length} transaction(s) to bulk payment contract in chunk ${chunkHash.substring(0, 16)}...`);
+      console.log(`   ✅ Found ${payoutTxs.length} transaction(s) to bulk payment contract in chunk ${currentChunkHash.substring(0, 16)}...`);
       
       // Verify transaction outcomes (receipts) for successful execution
       for (const tx of payoutTxs) {
         const txHash = tx.hash;
-        const senderId = tx.signer_id;
+        const senderAccountId = tx.signerId;
         
-        // Get transaction status using JSON-RPC provider
-        const txStatus = await rpcProvider.txStatus(txHash, senderId);
+        // Get transaction status using JSON-RPC client
+        const txStatus = await rpcTx(rpcClient, { txHash, senderAccountId });
         
         // Check for any failed receipts
-        const txFailedReceipts = txStatus.receipts_outcome.filter(
+        const txFailedReceipts = txStatus.receiptsOutcome.filter(
           ro => ro.outcome.status && ro.outcome.status.Failure
         );
         
@@ -695,7 +695,7 @@ for (const blockHeight of blockHeights) {
             });
           });
         } else {
-          console.log(`   ✅ Transaction ${txHash.substring(0, 16)}... succeeded with ${txStatus.receipts_outcome.length} receipt(s)`);
+          console.log(`   ✅ Transaction ${txHash.substring(0, 16)}... succeeded with ${txStatus.receiptsOutcome.length} receipt(s)`);
           verifiedTransactions++;
         }
       }
