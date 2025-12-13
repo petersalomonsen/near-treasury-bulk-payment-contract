@@ -507,22 +507,22 @@ console.log(`\n👤 Creating named accounts...`);
 for (let i = 0; i < 5; i++) {
   const namedAccount = `recipient${testRunNonce % 100000}${i}.${CONFIG.GENESIS_ACCOUNT_ID}`;
   
-  // Create the account
+  // Create the account as a subaccount
   try {
-    await account.functionCall({
-      contractId: CONFIG.GENESIS_ACCOUNT_ID,
-      methodName: 'create_account',
-      args: {
-        new_account_id: namedAccount,
-        new_public_key: KeyPair.fromRandom('ed25519').getPublicKey().toString(),
-      },
-      gas: '30000000000000',
-      attachedDeposit: parseNEAR('1'), // 1 NEAR for account creation
-    });
+    const newKeyPair = KeyPair.fromRandom('ed25519');
+    await account.createAccount(
+      namedAccount,
+      newKeyPair.getPublicKey(),
+      parseNEAR('1') // 1 NEAR for initial balance
+    );
     console.log(`✅ Created named account: ${namedAccount}`);
   } catch (error) {
     // Account might already exist, which is fine
-    console.log(`ℹ️  Named account may already exist: ${namedAccount}`);
+    if (error.message && error.message.includes('already exists')) {
+      console.log(`ℹ️  Named account already exists: ${namedAccount}`);
+    } else {
+      console.log(`⚠️  Could not create ${namedAccount}: ${error.message}`);
+    }
   }
   
   const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
