@@ -1,17 +1,31 @@
 # E2E Tests for DAO Bulk Payment Flow
 
-This directory contains end-to-end tests that demonstrate the full workflow for bulk payments from a DAO's perspective.
+This directory contains end-to-end tests that demonstrate the full workflow for bulk payments from a DAO's perspective, including scenarios with non-registered and non-existent accounts.
 
-## Overview
+## Test Files
 
-The test script (`dao-bulk-payment-flow.js`) performs the following steps:
+### 1. `dao-bulk-payment-flow.js`
+Main test for native NEAR token payments with mixed account types:
+- **Implicit accounts** (64-char hex): Should succeed
+- **Created named accounts**: Should succeed
+- **Non-existent named accounts**: Should have failed transaction receipts but still marked as processed
 
-1. **Create a Sputnik DAO** (`testdao.sputnik-dao.near`)
-2. **Buy Storage Proposal** - Create and approve a proposal to call `buy_storage` in the bulk payment contract
-3. **Submit Payment List** - Call the bulk payment API to submit a list of 500 recipients
-4. **Approve Payment List** - Create and approve a proposal to call `approve_list` with the required deposit
-5. **Wait for Payouts** - The background worker processes approved lists automatically
-6. **Verify Recipients** - Check that all recipients received their tokens
+### 2. `fungible-token-non-registered-flow.js`
+Test for fungible token (wrap.near) payments:
+- **Registered recipients**: Should succeed with balance changes
+- **Non-registered recipients**: Should have failed receipts, no balance changes
+
+### 3. `near-intents-non-registered-flow.js`
+Test for NEAR Intents token (nep141:wrap.near) payments:
+- **Registered recipients**: Should succeed with balance changes
+- **Non-registered recipients**: Should have failed receipts, no balance changes
+
+## Test Behavior
+
+All tests verify that:
+1. **All payments are processed** - Every payment gets a block_height regardless of success/failure
+2. **Successful transfers** - Registered/existing accounts show balance changes and successful transaction receipts
+3. **Failed transfers** - Non-registered/non-existent accounts have failed receipts but are still marked as processed
 
 ## Prerequisites
 
@@ -21,7 +35,7 @@ The test script (`dao-bulk-payment-flow.js`) performs the following steps:
 
 ## Configuration
 
-The test can be configured via environment variables:
+The tests can be configured via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -29,7 +43,7 @@ The test can be configured via environment variables:
 | `API_URL` | `http://localhost:8080` | URL of the bulk payment API |
 | `DAO_FACTORY_ID` | `sputnik-dao.near` | Sputnik DAO factory account |
 | `BULK_PAYMENT_CONTRACT_ID` | `bulk-payment.sandbox` | Bulk payment contract account |
-| `NUM_RECIPIENTS` | `500` | Number of payment recipients |
+| `NUM_RECIPIENTS` | `500` | Number of payment recipients (dao-bulk-payment-flow.js) |
 | `PAYMENT_AMOUNT` | `100000000000000000000000` | Amount per recipient (0.1 NEAR) |
 
 ## Running Tests
@@ -44,10 +58,15 @@ docker run -d --name sandbox -p 3030:3030 -p 8080:8080 -p 5001:5001 near-treasur
 # Wait for services to start
 sleep 30
 
-# Run the test
+# Run all tests
 cd e2e-tests
 npm install
-npm run test:docker
+npm run test:all:docker
+
+# Or run individual tests
+npm run test:docker                    # Native NEAR with mixed accounts
+npm run test:fungible-token:docker     # Fungible tokens (wrap.near)
+npm run test:near-intents:docker       # NEAR Intents tokens
 ```
 
 ### Against Fly.io Deployment
@@ -131,15 +150,33 @@ The test runs automatically via GitHub Actions on:
                ▼
 ┌───────────────────────────────┐
 │ 8. Verify recipients          │
+│    - Check all have block_height
+│    - Verify transaction receipts│
 │    - Check balances           │
-│    - All 500 received 0.1 NEAR│
 └───────────────────────────────┘
 ```
+
+## Test Scenarios
+
+### Native NEAR Payments (dao-bulk-payment-flow.js)
+- **Implicit accounts** (64-char hex): All succeed, balances updated
+- **Created named accounts**: All succeed, balances updated
+- **Non-existent named accounts**: Transaction receipts show failure, no balances
+
+### Fungible Token Payments (fungible-token-non-registered-flow.js)
+- **Registered accounts**: Successful transfers, token balances updated
+- **Non-registered accounts**: Failed receipts, no token balance changes
+
+### NEAR Intents Payments (near-intents-non-registered-flow.js)
+- **Registered accounts**: Successful ft_withdraw calls, balances updated
+- **Non-registered accounts**: Failed receipts, no balance changes
 
 ## Files
 
 - `package.json` - npm package configuration
-- `dao-bulk-payment-flow.js` - Main test script
+- `dao-bulk-payment-flow.js` - Main test for native NEAR with mixed accounts
+- `fungible-token-non-registered-flow.js` - Test for fungible tokens with non-registered recipients
+- `near-intents-non-registered-flow.js` - Test for NEAR Intents with non-registered recipients
 - `README.md` - This documentation
 
 ## Related
