@@ -24,6 +24,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as nearAPI from 'near-api-js';
+import { NearRpcClient, tx as rpcTx } from '@near-js/jsonrpc-client';
 const { connect, keyStores, KeyPair, utils } = nearAPI;
 
 // ============================================================================
@@ -570,11 +571,11 @@ assert.equal(listStatus.payments.length, CONFIG.NUM_RECIPIENTS, `Must have ${CON
 
 // Step 12: Wait for payout processing (background worker processes approved lists)
 console.log('\n⏳ Waiting for payout processing...');
-let allPaid = false;
+let allProcessed = false;
 let attempts = 0;
 const maxAttempts = 60; // 5 minutes at 5-second intervals
 
-while (!allPaid && attempts < maxAttempts) {
+while (!allProcessed && attempts < maxAttempts) {
   await sleep(5000);
   attempts++;
   
@@ -582,20 +583,114 @@ while (!allPaid && attempts < maxAttempts) {
   assert.equal(currentStatus.success, true, `Must be able to get list status: ${currentStatus.error}`);
   
   const { list } = currentStatus;
-  const progress = ((list.paid_payments / list.total_payments) * 100).toFixed(1);
-  console.log(`📊 Progress: ${list.paid_payments}/${list.total_payments} (${progress}%)`);
+  const progress = ((list.processed_payments / list.total_payments) * 100).toFixed(1);
+  console.log(`📊 Progress: ${list.processed_payments}/${list.total_payments} (${progress}%)`);
   
-  if (list.pending_payments === 0 && list.failed_payments === 0) {
-    allPaid = true;
+  // All payments are complete when there are no pending payments
+  if (list.pending_payments === 0) {
+    allProcessed = true;
   }
 }
 
-assert.equal(allPaid, true, 'All payments must complete within timeout');
+assert.equal(allProcessed, true, 'All payments must complete within timeout');
 
-// Step 13: Verify recipient balances
+// Step 13: Verify all payments have block_height registered
+console.log('\n🔍 Verifying all payments have block_height...');
+const finalStatus = await viewPaymentList(account, listId);
+
+// Check that every payment has a block_height (status is {Paid: {block_height: N}})
+const paymentsWithBlockHeight = finalStatus.payments.filter(p => 
+  p.status && p.status.Paid && typeof p.status.Paid.block_height === 'number'
+);
+const paymentsWithoutBlockHeight = finalStatus.payments.filter(p => 
+  !p.status || !p.status.Paid || typeof p.status.Paid.block_height !== 'number'
+);
+
+console.log(`📊 Payments with block_height: ${paymentsWithBlockHeight.length}/${finalStatus.payments.length}`);
+
+if (paymentsWithoutBlockHeight.length > 0) {
+  console.log(`❌ Payments without block_height:`);
+  paymentsWithoutBlockHeight.slice(0, 5).forEach(p => {
+    console.log(`   - ${p.recipient}: status = ${JSON.stringify(p.status)}`);
+  });
+}
+
+assert.equal(
+  paymentsWithBlockHeight.length, 
+  CONFIG.NUM_RECIPIENTS, 
+  `All ${CONFIG.NUM_RECIPIENTS} payments must have block_height registered`
+);
+console.log(`✅ All payments have block_height registered`);
+
+// Step 14: Verify payment transactions using the API endpoint
+console.log('\n🔗 Verifying payment transactions via API...');
+
+// Sample 10 recipients to verify their transaction hashes
+const samplePayments = finalStatus.payments.slice(0, 10);
+let verifiedTransactions = 0;
+let failedReceipts = [];
+let transactionErrors = [];
+
+for (const payment of samplePayments) {
+  const recipient = payment.recipient;
+  const blockHeight = payment.status.Paid.block_height;
+  
+  console.log(`\n📦 Checking transaction for ${recipient.substring(0, 20)}... (block ${blockHeight})`);
+  
+  // Use the new API endpoint to get the transaction hash
+  const txResponse = await apiRequest(`/list/${listId}/transaction/${recipient}`);
+  
+  if (!txResponse.success) {
+    console.log(`   ❌ API error: ${txResponse.error}`);
+    transactionErrors.push({ recipient, blockHeight, error: txResponse.error });
+    continue;
+  }
+  
+  const txHash = txResponse.transaction_hash;
+  console.log(`   ✅ Transaction hash: ${txHash.substring(0, 16)}...`);
+  
+  // Verify the transaction status using JSON-RPC client
+  const rpcClient = new NearRpcClient({ endpoint: CONFIG.SANDBOX_RPC_URL });
+  const txStatus = await rpcTx(rpcClient, { txHash, senderAccountId: CONFIG.BULK_PAYMENT_CONTRACT_ID });
+  
+  // Check for any failed receipts
+  const txFailedReceipts = txStatus.receiptsOutcome.filter(
+    ro => ro.outcome.status && ro.outcome.status.Failure
+  );
+  
+  if (txFailedReceipts.length > 0) {
+    console.log(`   ❌ Transaction has ${txFailedReceipts.length} failed receipt(s)`);
+    txFailedReceipts.forEach(fr => {
+      console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
+      failedReceipts.push({
+        txHash,
+        recipient,
+        blockHeight,
+        failure: fr.outcome.status.Failure
+      });
+    });
+  } else {
+    console.log(`   ✅ Transaction succeeded with ${txStatus.receiptsOutcome.length} receipt(s)`);
+    verifiedTransactions++;
+  }
+}
+
+console.log(`\n📊 Transaction verification summary:`);
+console.log(`   Verified transactions: ${verifiedTransactions}`);
+console.log(`   Failed receipts: ${failedReceipts.length}`);
+console.log(`   Transaction errors: ${transactionErrors.length}`);
+
+// Hard assertions for transaction verification
+assert.equal(failedReceipts.length, 0, `Found ${failedReceipts.length} failed receipt(s): ${JSON.stringify(failedReceipts)}`);
+assert.equal(transactionErrors.length, 0, `Found ${transactionErrors.length} transaction error(s): ${JSON.stringify(transactionErrors)}`);
+assert.ok(verifiedTransactions > 0, 'Must have at least one verified transaction');
+
+console.log(`✅ All ${verifiedTransactions} transaction(s) verified successfully via API`);
+
+// Step 15: Verify recipient balances
 console.log('\n🔍 Verifying recipient balances...');
-const sampleRecipients = payments.slice(0, 10); // Check first 10 recipients
-const balances = await checkRecipientBalances(near, sampleRecipients);
+const sampleRecipientsForBalance = payments.slice(0, 10); // Check first 10 recipients
+const balances = await checkRecipientBalances(near, sampleRecipientsForBalance);
 
 let successCount = 0;
 for (const balance of balances) {
@@ -607,32 +702,23 @@ for (const balance of balances) {
   }
 }
 
-// Step 14: Final verification
+// Step 16: Final verification
 console.log('\n=====================================');
 console.log('📊 Test Summary');
 console.log('=====================================');
 console.log(`DAO Created: ${daoAccountId}`);
 console.log(`Payment List ID: ${listId}`);
 console.log(`Total Recipients: ${CONFIG.NUM_RECIPIENTS}`);
-console.log(`Sample Recipients Verified: ${successCount}/${sampleRecipients.length}`);
-
-const finalStatus = await viewPaymentList(account, listId);
-const paidCount = finalStatus.payments.filter(p => p.status === 'Paid').length;
-const pendingCount = finalStatus.payments.filter(p => p.status === 'Pending').length;
-const failedCount = finalStatus.payments.filter(p => p.status && p.status.Failed).length;
-
-console.log(`Paid: ${paidCount}`);
-console.log(`Pending: ${pendingCount}`);
-console.log(`Failed: ${failedCount}`);
+console.log(`Payments with block_height: ${paymentsWithBlockHeight.length}`);
+console.log(`Transactions verified via API: ${verifiedTransactions}`);
+console.log(`Sample recipients verified: ${successCount}/${sampleRecipientsForBalance.length}`);
 console.log('=====================================\n');
 
 // Hard assertions
-assert.equal(paidCount, CONFIG.NUM_RECIPIENTS, `All ${CONFIG.NUM_RECIPIENTS} payments must be Paid`);
-assert.equal(pendingCount, 0, 'No payments should be Pending');
-assert.equal(failedCount, 0, 'No payments should be Failed');
-assert.equal(successCount, sampleRecipients.length, 'All sample recipients must have received their tokens');
+assert.equal(paymentsWithBlockHeight.length, CONFIG.NUM_RECIPIENTS, `All ${CONFIG.NUM_RECIPIENTS} payments must have block_height`);
+assert.equal(successCount, sampleRecipientsForBalance.length, 'All sample recipients must have received their tokens');
 
-console.log('🎉 Test PASSED: All payments completed successfully!');
+console.log('🎉 Test PASSED: All payments completed successfully with block_height tracking!');
 process.exit(0);
 
 } catch (error) {

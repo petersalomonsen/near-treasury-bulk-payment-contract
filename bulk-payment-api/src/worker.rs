@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::contract::{BulkPaymentClient, ListStatus};
 
@@ -103,7 +103,10 @@ impl PayoutWorker {
                 Err(e) => {
                     // Remove the list on error to prevent infinite retries
                     // The list can be manually resubmitted if needed
-                    error!("Error processing list {}: {}. Removing from queue (no retry).", list_id, e);
+                    error!(
+                        "Error processing list {}: {}. Removing from queue (no retry).",
+                        list_id, e
+                    );
                     lists_to_remove.push(list_id.clone());
                 }
             }

@@ -43,8 +43,11 @@ pub struct PaymentRecord {
 #[derive(Clone)]
 pub enum PaymentStatus {
     Pending,
-    Paid,
-    Failed { error: String },
+    /// Payment was executed at the specified block height.
+    /// This can be used to find the transaction on-chain.
+    Paid {
+        block_height: u64,
+    },
 }
 
 #[near(serializers = [json, borsh])]
@@ -63,6 +66,15 @@ pub enum ListStatus {
     Pending,
     Approved,
     Rejected,
+}
+
+/// Represents a completed payment transaction with block height for transaction lookup
+#[near(serializers = [json])]
+#[derive(Clone)]
+pub struct PaymentTransaction {
+    pub recipient: AccountId,
+    pub amount: U128,
+    pub block_height: u64,
 }
 
 impl Default for BulkPaymentContract {
@@ -444,8 +456,10 @@ impl BulkPaymentContract {
                     }
                 }
 
-                // Mark as Paid (in real implementation, would use callbacks)
-                payment.status = PaymentStatus::Paid;
+                // Mark as Paid with current block height (for transaction lookup)
+                payment.status = PaymentStatus::Paid {
+                    block_height: env::block_height(),
+                };
                 processed += 1;
             }
         }
@@ -493,41 +507,29 @@ impl BulkPaymentContract {
             .clone()
     }
 
-    /// Reset failed payments to pending for approved lists
-    pub fn retry_failed(&mut self, list_id: ListId) {
-        let caller = env::predecessor_account_id();
-
-        let mut list = self
+    /// Get payment transactions for a list.
+    /// Returns a list of recipients with their block heights where the payment was executed.
+    /// The block height can be used to look up the transaction on a block explorer.
+    pub fn get_payment_transactions(&self, list_id: ListId) -> Vec<PaymentTransaction> {
+        let list = self
             .payment_lists
             .get(&list_id)
-            .expect("Payment list not found")
-            .clone();
+            .expect("Payment list not found");
 
-        require!(
-            list.submitter == caller,
-            "Only the submitter can retry failed payments"
-        );
-
-        require!(
-            matches!(list.status, ListStatus::Approved),
-            "List must be Approved to retry failed payments"
-        );
-
-        let mut retry_count = 0;
-        for payment in list.payments.iter_mut() {
-            if matches!(payment.status, PaymentStatus::Failed { .. }) {
-                payment.status = PaymentStatus::Pending;
-                retry_count += 1;
-            }
-        }
-
-        self.payment_lists.insert(list_id.clone(), list);
-
-        log!(
-            "Reset {} failed payments to pending for list {}",
-            retry_count,
-            list_id
-        );
+        list.payments
+            .iter()
+            .filter_map(|p| {
+                if let PaymentStatus::Paid { block_height } = &p.status {
+                    Some(PaymentTransaction {
+                        recipient: p.recipient.clone(),
+                        amount: p.amount,
+                        block_height: *block_height,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// View storage credits for an account

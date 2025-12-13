@@ -219,12 +219,13 @@ async fn start_sandbox(bin_path: &Path, home_dir: &Path, rpc_port: u16, net_port
     let rpc_addr = format!("127.0.0.1:{}", rpc_port);
     let net_addr = format!("127.0.0.1:{}", net_port);
 
-    info!("Starting sandbox with RPC at {} and network at {}", rpc_addr, net_addr);
+    info!("Starting sandbox in archival mode with RPC at {} and network at {}", rpc_addr, net_addr);
 
     let child = Command::new(bin_path)
         .args([
             "--home", home_dir.to_str().unwrap(),
             "run",
+            "--archive",
             "--rpc-addr", &rpc_addr,
             "--network-addr", &net_addr,
         ])

@@ -37,8 +37,7 @@ This contract enables efficient batch payment processing on NEAR with support fo
 
 ### 4. Payment Status Tracking
 - **Pending**: Payment not yet processed
-- **Paid**: Payment successfully completed
-- **Failed**: Payment failed with error message (not currently used - marked as Paid)
+- **Paid**: Payment successfully completed (includes block_height for transaction lookup)
 
 ### 5. List Status Management
 - **Pending**: List submitted but not approved
@@ -93,11 +92,11 @@ Rejects a payment list.
 ### view_list(list_ref: u64) -> PaymentList
 Views payment list details including all payment statuses.
 
-### retry_failed(list_ref: u64)
-Resets failed payments to pending status.
-- Only submitter can retry
-- List must be Approved
-- Only affects Failed payments
+### get_payment_transactions(list_ref: u64) -> Vec<PaymentTransaction>
+Gets payment transactions for a list with block heights.
+- Returns list of recipients with their block heights where the payment was executed
+- Block height can be used to look up the transaction on a block explorer (e.g., nearblocks.io)
+- Only returns payments that have been processed (status: Paid)
 
 ### view_storage_credits(account_id: AccountId) -> NearToken
 Views storage credits for an account.

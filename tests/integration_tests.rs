@@ -562,9 +562,19 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(payments_array.len(), 250, "Should have 250 payments");
 
     for (i, payment) in payments_array.iter().enumerate() {
-        assert_eq!(
-            payment["status"], "Paid",
-            "Payment {} should be marked as Paid",
+        // Status is now an object like {"Paid": {"block_height": 123}}
+        let status = &payment["status"];
+        assert!(
+            status.get("Paid").is_some(),
+            "Payment {} should be marked as Paid, got: {:?}",
+            i,
+            status
+        );
+        // Verify block_height is present
+        let block_height = status["Paid"]["block_height"].as_u64();
+        assert!(
+            block_height.is_some(),
+            "Payment {} should have block_height in Paid status",
             i
         );
 
@@ -835,9 +845,19 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
     assert_eq!(payments_array.len(), 100, "Should have 100 payments");
 
     for (i, payment) in payments_array.iter().enumerate() {
-        assert_eq!(
-            payment["status"], "Paid",
-            "Payment {} should be marked as Paid",
+        // Status is now an object like {"Paid": {"block_height": 123}}
+        let status = &payment["status"];
+        assert!(
+            status.get("Paid").is_some(),
+            "Payment {} should be marked as Paid, got: {:?}",
+            i,
+            status
+        );
+        // Verify block_height is present
+        let block_height = status["Paid"]["block_height"].as_u64();
+        assert!(
+            block_height.is_some(),
+            "Payment {} should have block_height in Paid status",
             i
         );
 
@@ -1890,12 +1910,20 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
             i
         );
 
-        // Hard expectation: all payments must be Paid
-        let status = payment["status"].as_str().unwrap();
-        assert_eq!(
-            status, "Paid",
-            "Payment {} must be marked as Paid, got: {}",
-            i, status
+        // Hard expectation: all payments must be Paid (status is now object like {"Paid": {"block_height": 123}})
+        let status = &payment["status"];
+        assert!(
+            status.get("Paid").is_some(),
+            "Payment {} must be marked as Paid, got: {:?}",
+            i,
+            status
+        );
+        // Verify block_height is present
+        let block_height = status["Paid"]["block_height"].as_u64();
+        assert!(
+            block_height.is_some(),
+            "Payment {} should have block_height in Paid status",
+            i
         );
 
         // Hard expectation: correct amount (must match the random amount generated for this payment)
