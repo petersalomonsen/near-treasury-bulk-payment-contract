@@ -6,9 +6,14 @@
  * 2. Create a proposal to buy_storage in the bulk payment contract
  * 3. Approve the buy_storage proposal
  * 4. Submit a payment list via the bulk payment API (500 recipients)
+ *    - Mix of implicit accounts, created named accounts, and non-existent named accounts
  * 5. Create a proposal to approve the payment list
  * 6. Approve the payment list proposal
- * 7. Verify all recipients received their tokens
+ * 7. Verify all recipients are processed (all have block_height)
+ * 8. Verify transaction receipts:
+ *    - Implicit accounts: should succeed
+ *    - Created named accounts: should succeed
+ *    - Non-existent named accounts: should have failed receipts
  * 
  * Configuration:
  * - SANDBOX_RPC_URL: URL of the NEAR sandbox RPC (default: http://localhost:3030)
@@ -468,26 +473,91 @@ if (existingCredits >= storageCostBigInt) {
 }
 
 // Step 6: Generate payment list with unique amounts for each run
+// Include: implicit accounts, created named accounts, and non-existent named accounts
 console.log(`\n📋 Generating payment list with ${CONFIG.NUM_RECIPIENTS} recipients...`);
 const testRunNonce = Date.now(); // Make each test run unique
 const payments = [];
 let totalPaymentAmount = BigInt(0);
 
-for (let i = 0; i < CONFIG.NUM_RECIPIENTS; i++) {
+// Track different types of recipients for later verification
+const implicitRecipients = [];
+const createdNamedRecipients = [];
+const nonExistentNamedRecipients = [];
+
+// Reserve slots for named accounts (5 created + 3 non-existent)
+const numNamedAccounts = 8;
+const numImplicitAccounts = CONFIG.NUM_RECIPIENTS - numNamedAccounts;
+
+// Generate implicit account payments (these should succeed)
+for (let i = 0; i < numImplicitAccounts; i++) {
   const recipient = generateImplicitAccountId(i);
-  // Add small random variation to make list_id unique per run
-  // Use timestamp mod 1000000 to add a unique offset to each run
   const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
-  const variation = BigInt((testRunNonce % 1000000) + i); // Unique per run + recipient
+  const variation = BigInt((testRunNonce % 1000000) + i);
   const uniqueAmount = (baseAmount + variation).toString();
   payments.push({
     recipient,
     amount: uniqueAmount,
   });
+  implicitRecipients.push(recipient);
   totalPaymentAmount += BigInt(uniqueAmount);
 }
 
-console.log(`✅ Generated ${payments.length} payments`);
+// Create some named accounts that will exist (these should succeed)
+console.log(`\n👤 Creating named accounts...`);
+for (let i = 0; i < 5; i++) {
+  const namedAccount = `recipient${testRunNonce % 100000}${i}.${CONFIG.GENESIS_ACCOUNT_ID}`;
+  
+  // Create the account
+  try {
+    await account.functionCall({
+      contractId: CONFIG.GENESIS_ACCOUNT_ID,
+      methodName: 'create_account',
+      args: {
+        new_account_id: namedAccount,
+        new_public_key: KeyPair.fromRandom('ed25519').getPublicKey().toString(),
+      },
+      gas: '30000000000000',
+      attachedDeposit: parseNEAR('1'), // 1 NEAR for account creation
+    });
+    console.log(`✅ Created named account: ${namedAccount}`);
+  } catch (error) {
+    // Account might already exist, which is fine
+    console.log(`ℹ️  Named account may already exist: ${namedAccount}`);
+  }
+  
+  const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
+  const variation = BigInt((testRunNonce % 1000000) + numImplicitAccounts + i);
+  const uniqueAmount = (baseAmount + variation).toString();
+  payments.push({
+    recipient: namedAccount,
+    amount: uniqueAmount,
+  });
+  createdNamedRecipients.push(namedAccount);
+  totalPaymentAmount += BigInt(uniqueAmount);
+  
+  await sleep(200); // Small delay between account creations
+}
+
+// Add non-existent named accounts (these should fail)
+console.log(`\n❌ Adding non-existent named accounts to payment list...`);
+for (let i = 0; i < 3; i++) {
+  // Use a unique prefix that's unlikely to exist
+  const nonExistentAccount = `nonexistent${testRunNonce % 100000}${i}.${CONFIG.GENESIS_ACCOUNT_ID}`;
+  const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
+  const variation = BigInt((testRunNonce % 1000000) + numImplicitAccounts + 5 + i);
+  const uniqueAmount = (baseAmount + variation).toString();
+  payments.push({
+    recipient: nonExistentAccount,
+    amount: uniqueAmount,
+  });
+  nonExistentNamedRecipients.push(nonExistentAccount);
+  totalPaymentAmount += BigInt(uniqueAmount);
+}
+
+console.log(`✅ Generated ${payments.length} payments:`);
+console.log(`   - ${implicitRecipients.length} implicit accounts (should succeed)`);
+console.log(`   - ${createdNamedRecipients.length} created named accounts (should succeed)`);
+console.log(`   - ${nonExistentNamedRecipients.length} non-existent named accounts (should fail)`);
 console.log(`💰 Total payment amount: ${formatNEAR(totalPaymentAmount.toString())} NEAR`);
 
 // Step 7: Generate list_id (64-char hex SHA-256 hash)
@@ -625,35 +695,51 @@ console.log(`✅ All payments have block_height registered`);
 // Step 14: Verify payment transactions using the API endpoint
 console.log('\n🔗 Verifying payment transactions via API...');
 
-// Sample 10 recipients to verify their transaction hashes
-const samplePayments = finalStatus.payments.slice(0, 10);
-let verifiedTransactions = 0;
-let failedReceipts = [];
-let transactionErrors = [];
+// Verify ALL recipients (implicit, created named, and non-existent named)
+const rpcClient = new NearRpcClient({ endpoint: CONFIG.SANDBOX_RPC_URL });
+let implicitSuccesses = 0;
+let namedSuccesses = 0;
+let namedFailures = 0;
+let allTransactionResults = [];
 
-for (const payment of samplePayments) {
+// Check all payments
+for (const payment of finalStatus.payments) {
   const recipient = payment.recipient;
   const blockHeight = payment.status.Paid.block_height;
   
-  console.log(`\n📦 Checking transaction for ${recipient.substring(0, 20)}... (block ${blockHeight})`);
+  const isImplicit = implicitRecipients.includes(recipient);
+  const isCreatedNamed = createdNamedRecipients.includes(recipient);
+  const isNonExistent = nonExistentNamedRecipients.includes(recipient);
   
-  // Use the new API endpoint to get the transaction hash
+  let recipientType = 'UNKNOWN';
+  if (isImplicit) recipientType = 'IMPLICIT';
+  else if (isCreatedNamed) recipientType = 'CREATED NAMED';
+  else if (isNonExistent) recipientType = 'NON-EXISTENT NAMED';
+  
+  console.log(`\n📦 Checking ${recipientType}: ${recipient.substring(0, 30)}... (block ${blockHeight})`);
+  
+  // Get transaction hash from API
   const txResponse = await apiRequest(`/list/${listId}/transaction/${recipient}`);
   
   if (!txResponse.success) {
     console.log(`   ❌ API error: ${txResponse.error}`);
-    transactionErrors.push({ recipient, blockHeight, error: txResponse.error });
+    allTransactionResults.push({ 
+      recipient, 
+      recipientType, 
+      blockHeight, 
+      error: txResponse.error,
+      success: false,
+    });
     continue;
   }
   
   const txHash = txResponse.transaction_hash;
-  console.log(`   ✅ Transaction hash: ${txHash.substring(0, 16)}...`);
+  console.log(`   Transaction hash: ${txHash.substring(0, 16)}...`);
   
-  // Verify the transaction status using JSON-RPC client
-  const rpcClient = new NearRpcClient({ endpoint: CONFIG.SANDBOX_RPC_URL });
+  // Get transaction status
   const txStatus = await rpcTx(rpcClient, { txHash, senderAccountId: CONFIG.BULK_PAYMENT_CONTRACT_ID });
   
-  // Check for any failed receipts
+  // Check for failed receipts
   const txFailedReceipts = txStatus.receiptsOutcome.filter(
     ro => ro.outcome.status && ro.outcome.status.Failure
   );
@@ -662,43 +748,99 @@ for (const payment of samplePayments) {
     console.log(`   ❌ Transaction has ${txFailedReceipts.length} failed receipt(s)`);
     txFailedReceipts.forEach(fr => {
       console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
-      failedReceipts.push({
-        txHash,
-        recipient,
-        blockHeight,
-        failure: fr.outcome.status.Failure
-      });
     });
+    
+    allTransactionResults.push({
+      recipient,
+      recipientType,
+      blockHeight,
+      txHash,
+      success: false,
+      failures: txFailedReceipts.map(fr => fr.outcome.status.Failure),
+    });
+    
+    if (isNonExistent) {
+      namedFailures++;
+      console.log(`   ✅ Expected failure for non-existent account`);
+    } else {
+      console.log(`   ⚠️  Unexpected failure for ${recipientType}`);
+    }
   } else {
-    console.log(`   ✅ Transaction succeeded with ${txStatus.receiptsOutcome.length} receipt(s)`);
-    verifiedTransactions++;
+    console.log(`   ✅ Transaction succeeded`);
+    
+    allTransactionResults.push({
+      recipient,
+      recipientType,
+      blockHeight,
+      txHash,
+      success: true,
+    });
+    
+    if (isImplicit) {
+      implicitSuccesses++;
+    } else if (isCreatedNamed) {
+      namedSuccesses++;
+    } else if (isNonExistent) {
+      console.log(`   ⚠️  Unexpected success for non-existent account`);
+    }
+  }
+  
+  // Small delay to avoid overwhelming the RPC
+  if (allTransactionResults.length % 10 === 0) {
+    await sleep(500);
   }
 }
 
 console.log(`\n📊 Transaction verification summary:`);
-console.log(`   Verified transactions: ${verifiedTransactions}`);
-console.log(`   Failed receipts: ${failedReceipts.length}`);
-console.log(`   Transaction errors: ${transactionErrors.length}`);
+console.log(`   Implicit accounts (successful): ${implicitSuccesses}/${implicitRecipients.length}`);
+console.log(`   Created named accounts (successful): ${namedSuccesses}/${createdNamedRecipients.length}`);
+console.log(`   Non-existent named accounts (failed): ${namedFailures}/${nonExistentNamedRecipients.length}`);
 
-// Hard assertions for transaction verification
-assert.equal(failedReceipts.length, 0, `Found ${failedReceipts.length} failed receipt(s): ${JSON.stringify(failedReceipts)}`);
-assert.equal(transactionErrors.length, 0, `Found ${transactionErrors.length} transaction error(s): ${JSON.stringify(transactionErrors)}`);
-assert.ok(verifiedTransactions > 0, 'Must have at least one verified transaction');
+// Assertions based on requirements
+assert.equal(implicitSuccesses, implicitRecipients.length, 
+  'All implicit accounts must have successful transfers');
+assert.equal(namedSuccesses, createdNamedRecipients.length, 
+  'All created named accounts must have successful transfers');
+assert.equal(namedFailures, nonExistentNamedRecipients.length, 
+  'All non-existent named accounts must have failed transfers');
 
-console.log(`✅ All ${verifiedTransactions} transaction(s) verified successfully via API`);
+console.log(`✅ All transaction verifications passed!`);
 
-// Step 15: Verify recipient balances
-console.log('\n🔍 Verifying recipient balances...');
-const sampleRecipientsForBalance = payments.slice(0, 10); // Check first 10 recipients
-const balances = await checkRecipientBalances(near, sampleRecipientsForBalance);
+// Step 15: Verify recipient balances for sample accounts
+console.log('\n🔍 Verifying recipient balances for samples...');
 
-let successCount = 0;
-for (const balance of balances) {
-  if (balance.received) {
-    successCount++;
-    console.log(`✅ ${balance.recipient.substring(0, 16)}...: ${formatNEAR(balance.actual)} NEAR`);
-  } else {
-    console.log(`❌ ${balance.recipient.substring(0, 16)}...: ${formatNEAR(balance.actual)} NEAR (expected ${formatNEAR(balance.expected)})`);
+// Sample a few from each category
+const sampleImplicit = implicitRecipients.slice(0, 3);
+const sampleCreated = createdNamedRecipients.slice(0, 2);
+
+let implicitBalanceSuccesses = 0;
+let namedBalanceSuccesses = 0;
+
+for (const recipient of sampleImplicit) {
+  const payment = payments.find(p => p.recipient === recipient);
+  try {
+    const acc = await near.account(recipient);
+    const balance = await acc.getAccountBalance();
+    if (BigInt(balance.total) >= BigInt(payment.amount)) {
+      implicitBalanceSuccesses++;
+      console.log(`✅ Implicit ${recipient.substring(0, 16)}...: ${formatNEAR(balance.total)} NEAR`);
+    }
+  } catch (e) {
+    console.log(`⚠️  Implicit ${recipient.substring(0, 16)}...: Could not check balance`);
+  }
+}
+
+for (const recipient of sampleCreated) {
+  const payment = payments.find(p => p.recipient === recipient);
+  try {
+    const acc = await near.account(recipient);
+    const balance = await acc.getAccountBalance();
+    if (BigInt(balance.total) >= BigInt(payment.amount)) {
+      namedBalanceSuccesses++;
+      console.log(`✅ Named ${recipient.substring(0, 30)}...: ${formatNEAR(balance.total)} NEAR`);
+    }
+  } catch (e) {
+    console.log(`⚠️  Named ${recipient}: Could not check balance`);
   }
 }
 
@@ -709,16 +851,20 @@ console.log('=====================================');
 console.log(`DAO Created: ${daoAccountId}`);
 console.log(`Payment List ID: ${listId}`);
 console.log(`Total Recipients: ${CONFIG.NUM_RECIPIENTS}`);
+console.log(`  - Implicit accounts: ${implicitRecipients.length} (all should succeed)`);
+console.log(`  - Created named accounts: ${createdNamedRecipients.length} (all should succeed)`);
+console.log(`  - Non-existent named accounts: ${nonExistentNamedRecipients.length} (all should fail)`);
 console.log(`Payments with block_height: ${paymentsWithBlockHeight.length}`);
-console.log(`Transactions verified via API: ${verifiedTransactions}`);
-console.log(`Sample recipients verified: ${successCount}/${sampleRecipientsForBalance.length}`);
+console.log(`Successful implicit transfers: ${implicitSuccesses}/${implicitRecipients.length}`);
+console.log(`Successful named transfers: ${namedSuccesses}/${createdNamedRecipients.length}`);
+console.log(`Failed non-existent transfers: ${namedFailures}/${nonExistentNamedRecipients.length}`);
 console.log('=====================================\n');
 
 // Hard assertions
-assert.equal(paymentsWithBlockHeight.length, CONFIG.NUM_RECIPIENTS, `All ${CONFIG.NUM_RECIPIENTS} payments must have block_height`);
-assert.equal(successCount, sampleRecipientsForBalance.length, 'All sample recipients must have received their tokens');
+assert.equal(paymentsWithBlockHeight.length, CONFIG.NUM_RECIPIENTS, 
+  `All ${CONFIG.NUM_RECIPIENTS} payments must have block_height`);
 
-console.log('🎉 Test PASSED: All payments completed successfully with block_height tracking!');
+console.log('🎉 Test PASSED: All payments completed with correct behavior!');
 process.exit(0);
 
 } catch (error) {

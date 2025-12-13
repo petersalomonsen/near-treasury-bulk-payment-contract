@@ -7,7 +7,13 @@
   "scripts": {
     "test": "node dao-bulk-payment-flow.js",
     "test:docker": "SANDBOX_RPC_URL=http://localhost:3030 API_URL=http://localhost:8080 node dao-bulk-payment-flow.js",
-    "test:fly": "node dao-bulk-payment-flow.js"
+    "test:fly": "node dao-bulk-payment-flow.js",
+    "test:fungible-token": "node fungible-token-non-registered-flow.js",
+    "test:fungible-token:docker": "SANDBOX_RPC_URL=http://localhost:3030 API_URL=http://localhost:8080 node fungible-token-non-registered-flow.js",
+    "test:near-intents": "node near-intents-non-registered-flow.js",
+    "test:near-intents:docker": "SANDBOX_RPC_URL=http://localhost:3030 API_URL=http://localhost:8080 node near-intents-non-registered-flow.js",
+    "test:all": "npm run test && npm run test:fungible-token && npm run test:near-intents",
+    "test:all:docker": "npm run test:docker && npm run test:fungible-token:docker && npm run test:near-intents:docker"
   },
   "dependencies": {
     "near-api-js": "^5.0.1",
