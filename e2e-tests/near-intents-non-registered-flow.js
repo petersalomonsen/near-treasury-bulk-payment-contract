@@ -8,8 +8,8 @@
  * 1. Use existing DAO from dao-bulk-payment-flow.js (testdao.sputnik-dao.near)
  * 2. Create a payment list with nep141:wrap.near tokens (NEAR Intents format)
  * 3. Mix of registered and non-registered recipients:
- *    - Some implicit accounts (will be registered during test)
- *    - Some implicit accounts (not registered)
+ *    - Some implicit accounts will be registered with intents.near before payment
+ *    - Some implicit accounts will NOT be registered (non-registered)
  * 4. Submit and approve the payment list
  * 5. Process payments
  * 6. Verify ALL payments are marked as processed (have block_height)
@@ -264,7 +264,9 @@ console.log(`\n👥 Generating ${CONFIG.NUM_REGISTERED + CONFIG.NUM_NON_REGISTER
 const registeredRecipients = [];
 const nonRegisteredRecipients = [];
 
-const startIndex = Date.now() + 10000; // Use timestamp to get unique accounts
+// Use timestamp with offset to avoid collisions with other tests
+// Offset: 10000000 to distinguish from fungible-token test (1000000) and dao test (0)
+const startIndex = Date.now() + 10000000;
 
 // Generate registered recipients
 for (let i = 0; i < CONFIG.NUM_REGISTERED; i++) {
@@ -428,12 +430,15 @@ const totalAmount = payments.reduce((sum, p) => sum + BigInt(p.amount), 0n);
 console.log(`💸 Transferring ${totalAmount.toString()} tokens to bulk payment contract...`);
 
 // Use mt_transfer_call to approve the list (intents.near pattern)
+// Note: We use the base token ID (wrap.near) here, not the nep141: prefix,
+// because mt_transfer_call is a method on intents.near multi-token contract,
+// which uses the underlying token contract ID as the token_id parameter.
 await daoAccount.functionCall({
   contractId: CONFIG.INTENTS_CONTRACT_ID,
   methodName: 'mt_transfer_call',
   args: {
     receiver_id: CONFIG.BULK_PAYMENT_CONTRACT_ID,
-    token_id: tokenId, // Use base token ID for intents.near
+    token_id: tokenId, // Base token ID (wrap.near) for intents.near
     amount: totalAmount.toString(),
     msg: JSON.stringify({ list_id: listId }), // Include list_id in message
   },

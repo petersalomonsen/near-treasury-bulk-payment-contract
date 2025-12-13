@@ -256,7 +256,9 @@ console.log(`\n👥 Generating ${CONFIG.NUM_REGISTERED + CONFIG.NUM_NON_REGISTER
 const registeredRecipients = [];
 const nonRegisteredRecipients = [];
 
-const startIndex = Date.now(); // Use timestamp to get unique accounts
+// Use timestamp with offset to avoid collisions with other tests
+// Offset: 1000000 to distinguish from dao-bulk-payment-flow.js which uses no offset
+const startIndex = Date.now() + 1000000;
 
 // Generate registered recipients
 for (let i = 0; i < CONFIG.NUM_REGISTERED; i++) {

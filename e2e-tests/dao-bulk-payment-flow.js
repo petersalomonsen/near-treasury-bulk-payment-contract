@@ -505,7 +505,9 @@ for (let i = 0; i < numImplicitAccounts; i++) {
 // Create some named accounts that will exist (these should succeed)
 console.log(`\n👤 Creating named accounts...`);
 for (let i = 0; i < 5; i++) {
-  const namedAccount = `recipient${testRunNonce % 100000}${i}.${CONFIG.GENESIS_ACCOUNT_ID}`;
+  // Use modulo 10000000 to create a sufficiently unique account name
+  // This large modulus reduces the chance of collisions with previous test runs
+  const namedAccount = `recipient${testRunNonce % 10000000}${i}.${CONFIG.GENESIS_ACCOUNT_ID}`;
   
   // Create the account as a subaccount
   try {
@@ -541,8 +543,9 @@ for (let i = 0; i < 5; i++) {
 // Add non-existent named accounts (these should fail)
 console.log(`\n❌ Adding non-existent named accounts to payment list...`);
 for (let i = 0; i < 3; i++) {
-  // Use a unique prefix that's unlikely to exist
-  const nonExistentAccount = `nonexistent${testRunNonce % 100000}${i}.${CONFIG.GENESIS_ACCOUNT_ID}`;
+  // Use "nonexist" prefix with large modulus to ensure these accounts don't exist
+  // The modulo 10000000 creates unique names that shouldn't collide with existing accounts
+  const nonExistentAccount = `nonexist${testRunNonce % 10000000}${i}.${CONFIG.GENESIS_ACCOUNT_ID}`;
   const baseAmount = BigInt(CONFIG.PAYMENT_AMOUNT);
   const variation = BigInt((testRunNonce % 1000000) + numImplicitAccounts + 5 + i);
   const uniqueAmount = (baseAmount + variation).toString();
