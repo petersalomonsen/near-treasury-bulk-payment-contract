@@ -309,7 +309,7 @@ if (BigInt(daoTokenBalance) < requiredBalance) {
     methodName: 'near_deposit',
     args: {},
     gas: '30000000000000',
-    attachedDeposit: (neededTokens + parseNEAR('1')).toString(), // Extra for fees
+    attachedDeposit: (neededTokens + BigInt(parseNEAR('1'))).toString(), // Extra for fees
   });
   
   // Transfer wNEAR to DAO
@@ -345,10 +345,11 @@ if (existingCredits < storageCostBigInt) {
   const additionalNeeded = storageCostBigInt - existingCredits;
   console.log(`📝 Buying additional storage: ${formatNEAR(additionalNeeded.toString())} NEAR`);
   
-  await daoAccount.functionCall({
+  // Use genesisAccount to buy storage on behalf of DAO
+  await genesisAccount.functionCall({
     contractId: CONFIG.BULK_PAYMENT_CONTRACT_ID,
     methodName: 'buy_storage',
-    args: { num_records: totalRecipients },
+    args: { num_records: totalRecipients, beneficiary_account_id: CONFIG.DAO_ACCOUNT_ID },
     gas: '30000000000000',
     attachedDeposit: storageCost,
   });
