@@ -513,24 +513,39 @@ for (const payment of finalStatus.payments) {
   // Get transaction status
   const txStatus = await rpcTx(rpcClient, { txHash, senderAccountId: CONFIG.BULK_PAYMENT_CONTRACT_ID });
   
-  // Check for failed receipts
-  const failedReceipts = txStatus.receiptsOutcome.filter(
-    ro => ro.outcome.status && ro.outcome.status.Failure
-  );
+  // Check if THIS specific recipient has a failed receipt
+  // In batched transactions, multiple recipients share the same transaction,
+  // so we must filter for failures related to this specific recipient
+  const recipientFailedReceipt = txStatus.receiptsOutcome.find(ro => {
+    if (!ro.outcome.status?.Failure) return false;
+    
+    const failure = ro.outcome.status.Failure;
+    
+    // Check if the failure is for this specific recipient by looking at:
+    // 1. The accountId in AccountDoesNotExist errors
+    // 2. The receiver_id field on the receipt outcome
+    const accountId = failure?.ActionError?.kind?.AccountDoesNotExist?.accountId;
+    if (accountId === recipient) return true;
+    
+    // Also check receiver_id on the outcome
+    if (ro.outcome.executor_id === recipient || ro.outcome.receiver_id === recipient) {
+      return true;
+    }
+    
+    return false;
+  });
   
-  if (failedReceipts.length > 0) {
-    console.log(`   ❌ Transaction has ${failedReceipts.length} failed receipt(s)`);
-    failedReceipts.forEach(fr => {
-      console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
-    });
-    failedTransfers.push({ recipient, isRegistered, txHash, failures: failedReceipts });
+  if (recipientFailedReceipt) {
+    console.log(`   ❌ Transaction failed for this recipient`);
+    console.log(`      Failure: ${JSON.stringify(recipientFailedReceipt.outcome.status.Failure)}`);
+    failedTransfers.push({ recipient, isRegistered, txHash, failure: recipientFailedReceipt.outcome.status.Failure });
     
     // Fail immediately if a registered account has failed transfer (unexpected)
     if (isRegistered) {
-      assert.fail(`Unexpected failure for registered account ${recipient}: ${JSON.stringify(failedReceipts[0].outcome.status.Failure)}`);
+      assert.fail(`Unexpected failure for registered account ${recipient}: ${JSON.stringify(recipientFailedReceipt.outcome.status.Failure)}`);
     }
   } else {
-    console.log(`   ✅ Transaction succeeded`);
+    console.log(`   ✅ Transaction succeeded for this recipient`);
     successfulTransfers.push({ recipient, isRegistered, txHash });
     
     // Fail immediately if a non-registered account has successful transfer (unexpected)
