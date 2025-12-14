@@ -524,9 +524,19 @@ for (const payment of finalStatus.payments) {
       console.log(`      Failure: ${JSON.stringify(fr.outcome.status.Failure)}`);
     });
     failedTransfers.push({ recipient, isRegistered, txHash, failures: failedReceipts });
+    
+    // Fail immediately if a registered account has failed transfer (unexpected)
+    if (isRegistered) {
+      assert.fail(`Unexpected failure for registered account ${recipient}: ${JSON.stringify(failedReceipts[0].outcome.status.Failure)}`);
+    }
   } else {
     console.log(`   ✅ Transaction succeeded`);
     successfulTransfers.push({ recipient, isRegistered, txHash });
+    
+    // Fail immediately if a non-registered account has successful transfer (unexpected)
+    if (!isRegistered) {
+      assert.fail(`Unexpected success for non-registered account ${recipient}`);
+    }
   }
 }
 
@@ -537,16 +547,16 @@ for (const recipient of registeredRecipients) {
   const balance = await getMultiTokenBalance(genesisAccount, recipient, tokenId);
   const payment = payments.find(p => p.recipient === recipient);
   
-  if (BigInt(balance) >= BigInt(payment.amount)) {
-    console.log(`✅ Registered ${recipient.substring(0, 16)}...: balance = ${balance}`);
-  } else {
-    console.log(`⚠️  Registered ${recipient.substring(0, 16)}...: balance = ${balance}, expected >= ${payment.amount}`);
-  }
+  console.log(`✅ Registered ${recipient.substring(0, 16)}...: balance = ${balance}`);
+  assert.ok(BigInt(balance) >= BigInt(payment.amount), 
+    `Registered account ${recipient} must have balance >= ${payment.amount}, got ${balance}`);
 }
 
 for (const recipient of nonRegisteredRecipients) {
   const balance = await getMultiTokenBalance(genesisAccount, recipient, tokenId);
-  console.log(`ℹ️  Non-registered ${recipient.substring(0, 16)}...: balance = ${balance} (expected 0)`);
+  console.log(`ℹ️  Non-registered ${recipient.substring(0, 16)}...: balance = ${balance}`);
+  assert.equal(balance, '0', 
+    `Non-registered account ${recipient} must have 0 balance, got ${balance}`);
 }
 
 // Step 16: Validate expectations

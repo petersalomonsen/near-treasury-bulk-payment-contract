@@ -724,17 +724,9 @@ for (const payment of finalStatus.payments) {
   // Get transaction hash from API
   const txResponse = await apiRequest(`/list/${listId}/transaction/${recipient}`);
   
-  if (!txResponse.success) {
-    console.log(`   ❌ API error: ${txResponse.error}`);
-    allTransactionResults.push({ 
-      recipient, 
-      recipientType, 
-      blockHeight, 
-      error: txResponse.error,
-      success: false,
-    });
-    continue;
-  }
+  // Fail immediately on API errors instead of silently continuing
+  assert.equal(txResponse.success, true, 
+    `API error for ${recipient}: ${txResponse.error || 'Unknown error'}`);
   
   const txHash = txResponse.transaction_hash;
   console.log(`   Transaction hash: ${txHash.substring(0, 16)}...`);
@@ -766,7 +758,8 @@ for (const payment of finalStatus.payments) {
       namedFailures++;
       console.log(`   ✅ Expected failure for non-existent account`);
     } else {
-      console.log(`   ⚠️  Unexpected failure for ${recipientType}`);
+      // Unexpected failure for implicit or created named account
+      assert.fail(`Unexpected failure for ${recipientType} account ${recipient}: ${JSON.stringify(txFailedReceipts[0].outcome.status.Failure)}`);
     }
   } else {
     console.log(`   ✅ Transaction succeeded`);
@@ -784,7 +777,8 @@ for (const payment of finalStatus.payments) {
     } else if (isCreatedNamed) {
       namedSuccesses++;
     } else if (isNonExistent) {
-      console.log(`   ⚠️  Unexpected success for non-existent account`);
+      // Unexpected success for non-existent account
+      assert.fail(`Unexpected success for non-existent account ${recipient}`);
     }
   }
   
@@ -816,35 +810,24 @@ console.log('\n🔍 Verifying recipient balances for samples...');
 const sampleImplicit = implicitRecipients.slice(0, 3);
 const sampleCreated = createdNamedRecipients.slice(0, 2);
 
-let implicitBalanceSuccesses = 0;
-let namedBalanceSuccesses = 0;
-
 for (const recipient of sampleImplicit) {
   const payment = payments.find(p => p.recipient === recipient);
-  try {
-    const acc = await near.account(recipient);
-    const balance = await acc.getAccountBalance();
-    if (BigInt(balance.total) >= BigInt(payment.amount)) {
-      implicitBalanceSuccesses++;
-      console.log(`✅ Implicit ${recipient.substring(0, 16)}...: ${formatNEAR(balance.total)} NEAR`);
-    }
-  } catch (e) {
-    console.log(`⚠️  Implicit ${recipient.substring(0, 16)}...: Could not check balance`);
-  }
+  const acc = await near.account(recipient);
+  const balance = await acc.getAccountBalance();
+  
+  console.log(`✅ Implicit ${recipient.substring(0, 16)}...: ${formatNEAR(balance.total)} NEAR`);
+  assert.ok(BigInt(balance.total) >= BigInt(payment.amount), 
+    `Implicit account ${recipient} must have balance >= ${payment.amount}, got ${balance.total}`);
 }
 
 for (const recipient of sampleCreated) {
   const payment = payments.find(p => p.recipient === recipient);
-  try {
-    const acc = await near.account(recipient);
-    const balance = await acc.getAccountBalance();
-    if (BigInt(balance.total) >= BigInt(payment.amount)) {
-      namedBalanceSuccesses++;
-      console.log(`✅ Named ${recipient.substring(0, 30)}...: ${formatNEAR(balance.total)} NEAR`);
-    }
-  } catch (e) {
-    console.log(`⚠️  Named ${recipient}: Could not check balance`);
-  }
+  const acc = await near.account(recipient);
+  const balance = await acc.getAccountBalance();
+  
+  console.log(`✅ Named ${recipient.substring(0, 30)}...: ${formatNEAR(balance.total)} NEAR`);
+  assert.ok(BigInt(balance.total) >= BigInt(payment.amount), 
+    `Named account ${recipient} must have balance >= ${payment.amount}, got ${balance.total}`);
 }
 
 // Step 16: Final verification
