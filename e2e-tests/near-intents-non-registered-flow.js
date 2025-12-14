@@ -145,7 +145,6 @@ async function setupNearConnection() {
   
   const keyPair = KeyPair.fromString(CONFIG.GENESIS_PRIVATE_KEY);
   await keyStore.setKey('sandbox', CONFIG.GENESIS_ACCOUNT_ID, keyPair);
-  await keyStore.setKey('sandbox', CONFIG.DAO_ACCOUNT_ID, keyPair); // DAO uses same key in tests
   
   const connectionConfig = {
     networkId: 'sandbox',
@@ -155,9 +154,93 @@ async function setupNearConnection() {
   
   const near = await connect(connectionConfig);
   const genesisAccount = await near.account(CONFIG.GENESIS_ACCOUNT_ID);
-  const daoAccount = await near.account(CONFIG.DAO_ACCOUNT_ID);
   
-  return { near, genesisAccount, daoAccount, keyStore };
+  return { near, genesisAccount, keyStore };
+}
+
+// ============================================================================
+// DAO Operations
+// ============================================================================
+
+/**
+ * Create a function call proposal in the DAO
+ */
+async function createProposal(account, daoAccountId, description, receiverId, methodName, args, deposit) {
+  console.log(`\n📝 Creating proposal: ${description}`);
+  
+  const proposalArgs = {
+    proposal: {
+      description,
+      kind: {
+        FunctionCall: {
+          receiver_id: receiverId,
+          actions: [
+            {
+              method_name: methodName,
+              args: Buffer.from(JSON.stringify(args)).toString('base64'),
+              deposit: deposit || '0',
+              gas: '150000000000000', // 150 TGas
+            },
+          ],
+        },
+      },
+    },
+  };
+  
+  const result = await account.functionCall({
+    contractId: daoAccountId,
+    methodName: 'add_proposal',
+    args: proposalArgs,
+    gas: '300000000000000',
+    attachedDeposit: parseNEAR('0.1'), // Proposal bond
+  });
+  
+  const proposalId = await getLastProposalId(account, daoAccountId);
+  console.log(`✅ Proposal created with ID: ${proposalId}`);
+  return proposalId;
+}
+
+/**
+ * Get the last proposal ID from the DAO
+ */
+async function getLastProposalId(account, daoAccountId) {
+  const result = await account.viewFunction({
+    contractId: daoAccountId,
+    methodName: 'get_last_proposal_id',
+    args: {},
+  });
+  return result - 1; // get_last_proposal_id returns the next ID, so subtract 1
+}
+
+/**
+ * Vote to approve a proposal
+ */
+async function approveProposal(account, daoAccountId, proposalId) {
+  console.log(`\n✅ Approving proposal ${proposalId}`);
+  
+  await account.functionCall({
+    contractId: daoAccountId,
+    methodName: 'act_proposal',
+    args: {
+      id: proposalId,
+      action: 'VoteApprove',
+    },
+    gas: '300000000000000',
+  });
+  
+  console.log(`✅ Proposal ${proposalId} approved`);
+}
+
+/**
+ * Get proposal status
+ */
+async function getProposalStatus(account, daoAccountId, proposalId) {
+  const proposal = await account.viewFunction({
+    contractId: daoAccountId,
+    methodName: 'get_proposal',
+    args: { id: proposalId },
+  });
+  return proposal.status;
 }
 
 // ============================================================================
@@ -252,9 +335,12 @@ try {
 
 // Step 1: Setup NEAR connection
 console.log('📡 Connecting to NEAR sandbox...');
-const { near, genesisAccount, daoAccount, keyStore } = await setupNearConnection();
+const { near, genesisAccount, keyStore } = await setupNearConnection();
 console.log(`✅ Connected as genesis: ${genesisAccount.accountId}`);
-console.log(`✅ Connected as DAO: ${daoAccount.accountId}`);
+
+// Reuse existing DAO from dao-bulk-payment-flow.js
+const daoAccountId = CONFIG.DAO_ACCOUNT_ID;
+console.log(`✅ Using DAO: ${daoAccountId}`);
 
 // Step 2: Check API health
 console.log('\n🏥 Checking API health...');
@@ -296,11 +382,11 @@ console.log(`✅ Registered ${registeredRecipients.length} accounts`);
 
 // Step 5: Ensure DAO is registered with intents.near and has tokens
 console.log('\n💰 Preparing DAO account...');
-await registerWithIntents(genesisAccount, CONFIG.DAO_ACCOUNT_ID);
+await registerWithIntents(genesisAccount, daoAccountId);
 
 // Check DAO's multi-token balance for wrap.near
 const tokenId = CONFIG.WRAP_TOKEN_ID; // In intents.near, tokens are referenced by their contract ID
-let daoTokenBalance = await getMultiTokenBalance(daoAccount, CONFIG.DAO_ACCOUNT_ID, tokenId);
+let daoTokenBalance = await getMultiTokenBalance(genesisAccount, daoAccountId, tokenId);
 console.log(`📊 DAO ${tokenId} balance in intents.near: ${daoTokenBalance}`);
 
 const totalRecipients = CONFIG.NUM_REGISTERED + CONFIG.NUM_NON_REGISTERED;
@@ -329,7 +415,7 @@ if (BigInt(daoTokenBalance) < requiredBalance) {
     contractId: CONFIG.INTENTS_CONTRACT_ID,
     methodName: 'mt_transfer',
     args: {
-      receiver_id: CONFIG.DAO_ACCOUNT_ID,
+      receiver_id: daoAccountId,
       token_id: tokenId,
       amount: neededTokens.toString(),
     },
@@ -337,7 +423,7 @@ if (BigInt(daoTokenBalance) < requiredBalance) {
     attachedDeposit: '1',
   });
   
-  daoTokenBalance = await getMultiTokenBalance(daoAccount, CONFIG.DAO_ACCOUNT_ID, tokenId);
+  daoTokenBalance = await getMultiTokenBalance(genesisAccount, daoAccountId, tokenId);
   console.log(`✅ DAO token balance in intents.near now: ${daoTokenBalance}`);
 }
 
@@ -354,7 +440,7 @@ try {
   const credits = await genesisAccount.viewFunction({
     contractId: CONFIG.BULK_PAYMENT_CONTRACT_ID,
     methodName: 'view_storage_credits',
-    args: { account_id: CONFIG.DAO_ACCOUNT_ID },
+    args: { account_id: daoAccountId },
   });
   existingCredits = BigInt(credits || '0');
   console.log(`📊 Existing storage credits: ${formatNEAR(existingCredits.toString())} NEAR`);
@@ -365,13 +451,13 @@ try {
 const storageCostBigInt = BigInt(storageCost);
 if (existingCredits < storageCostBigInt) {
   const additionalNeeded = storageCostBigInt - existingCredits;
-  console.log(`📝 Buying additional storage: ${formatNEAR(additionalNeeded.toString())} NEAR`);
+  console.log(`📝 Need to buy additional storage: ${formatNEAR(additionalNeeded.toString())} NEAR`);
   
   // Use genesisAccount to buy storage on behalf of DAO
   await genesisAccount.functionCall({
     contractId: CONFIG.BULK_PAYMENT_CONTRACT_ID,
     methodName: 'buy_storage',
-    args: { num_records: totalRecipients, beneficiary_account_id: CONFIG.DAO_ACCOUNT_ID },
+    args: { num_records: totalRecipients, beneficiary_account_id: daoAccountId },
     gas: '30000000000000',
     attachedDeposit: storageCost,
   });
@@ -406,51 +492,60 @@ for (let i = 0; i < nonRegisteredRecipients.length; i++) {
 
 console.log(`✅ Generated ${payments.length} payments`);
 
-// Step 9: Generate list_id and submit to contract
+// Step 9: Generate list_id and submit via proposal
 // Use nep141: prefix for NEAR Intents token format
 const tokenIdForList = `nep141:${CONFIG.WRAP_TOKEN_ID}`;
-const listId = generateListId(CONFIG.DAO_ACCOUNT_ID, tokenIdForList, payments);
+const listId = generateListId(daoAccountId, tokenIdForList, payments);
 console.log(`\n🔑 Generated list_id: ${listId}`);
 console.log(`🔖 Token ID: ${tokenIdForList}`);
 
-// Step 10: Submit payment list to contract
-console.log('\n📤 Submitting payment list to contract...');
-await daoAccount.functionCall({
-  contractId: CONFIG.BULK_PAYMENT_CONTRACT_ID,
-  methodName: 'submit_list',
-  args: {
+// Step 10: Submit payment list via DAO proposal
+console.log('\n📤 Submitting payment list via DAO proposal...');
+const submitProposalId = await createProposal(
+  genesisAccount,
+  daoAccountId,
+  `Submit NEAR Intents payment list (${payments.length} recipients)`,
+  CONFIG.BULK_PAYMENT_CONTRACT_ID,
+  'submit_list',
+  {
     token_id: tokenIdForList,
     payments: payments,
   },
-  gas: '300000000000000',
-});
+  '0'
+);
+
+await approveProposal(genesisAccount, daoAccountId, submitProposalId);
+await sleep(2000); // Wait for execution
 
 console.log(`✅ Payment list submitted`);
 
-// Step 11: Approve payment list via mt_transfer_call
-console.log('\n✅ Approving payment list via mt_transfer_call...');
+// Step 11: Approve payment list via DAO proposals using mt_transfer_call
+console.log('\n✅ Approving payment list via DAO proposal (mt_transfer_call)...');
 
 const totalAmount = payments.reduce((sum, p) => sum + BigInt(p.amount), 0n);
-console.log(`💸 Transferring ${totalAmount.toString()} tokens to bulk payment contract...`);
+console.log(`💸 Total payment amount: ${totalAmount.toString()} tokens`);
 
-// Use mt_transfer_call to approve the list (intents.near pattern)
-// Note: We use the base token ID (wrap.near) here, not the nep141: prefix,
-// because mt_transfer_call is a method on intents.near multi-token contract,
-// which uses the underlying token contract ID as the token_id parameter.
-await daoAccount.functionCall({
-  contractId: CONFIG.INTENTS_CONTRACT_ID,
-  methodName: 'mt_transfer_call',
-  args: {
+// Create proposal to transfer tokens via mt_transfer_call which approves the list
+console.log('\n📝 Creating proposal to transfer tokens via mt_transfer_call...');
+const transferProposalId = await createProposal(
+  genesisAccount,
+  daoAccountId,
+  `Transfer ${totalAmount.toString()} tokens via mt_transfer_call to approve list ${listId}`,
+  CONFIG.INTENTS_CONTRACT_ID,
+  'mt_transfer_call',
+  {
     receiver_id: CONFIG.BULK_PAYMENT_CONTRACT_ID,
     token_id: tokenId, // Base token ID (wrap.near) for intents.near
     amount: totalAmount.toString(),
-    msg: JSON.stringify({ list_id: listId }), // Include list_id in message
+    msg: JSON.stringify({ list_id: listId }),
   },
-  gas: '300000000000000',
-  attachedDeposit: '1',
-});
+  '1' // 1 yoctoNEAR for security
+);
 
-console.log(`✅ Payment list approved`);
+await approveProposal(genesisAccount, daoAccountId, transferProposalId);
+await sleep(2000); // Wait for execution
+
+console.log(`✅ Payment list approved via mt_transfer_call`);
 
 // Step 12: Wait for processing
 console.log('\n⏳ Waiting for payment processing...');
