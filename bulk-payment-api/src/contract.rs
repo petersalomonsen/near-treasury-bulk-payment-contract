@@ -402,23 +402,15 @@ impl BulkPaymentClient {
     }
 
     /// Execute payout batch for a payment list
-    pub async fn payout_batch(
-        &self,
-        caller_id: &str,
-        list_id: &str,
-        max_payments: Option<u64>,
-    ) -> Result<u64> {
-        debug!(
-            "Executing payout batch for list: {} with max_payments: {:?}",
-            list_id, max_payments
-        );
+    /// Contract auto-determines optimal batch size based on token type
+    pub async fn payout_batch(&self, caller_id: &str, list_id: &str) -> Result<u64> {
+        debug!("Executing payout batch for list: {}", list_id);
 
         let result = Contract(self.contract_id.parse()?)
             .call_function(
                 "payout_batch",
                 json!({
-                    "list_id": list_id,
-                    "max_payments": max_payments
+                    "list_id": list_id
                 }),
             )?
             .transaction()

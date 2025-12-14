@@ -51,7 +51,8 @@ const CONFIG = {
   BULK_PAYMENT_CONTRACT_ID: process.env.BULK_PAYMENT_CONTRACT_ID || 'bulk-payment.near',
   
   // Test parameters
-  NUM_RECIPIENTS: parseInt(process.env.NUM_RECIPIENTS || '500', 10),
+  // Note: 250 is the max before gas limits are exceeded for list deserialization (~156 TGas for storage read)
+  NUM_RECIPIENTS: parseInt(process.env.NUM_RECIPIENTS || '250', 10),
   PAYMENT_AMOUNT: process.env.PAYMENT_AMOUNT || '100000000000000000000000', // 0.1 NEAR per recipient
   
   // Genesis account credentials (default sandbox genesis account from near-sandbox-rs - PUBLIC TEST KEY)

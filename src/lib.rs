@@ -358,17 +358,26 @@ impl BulkPaymentContract {
 
     /// Process payments in batches (public function, anyone can call)
     ///
-    /// NOTE: Returns a Promise that will execute asynchronously!
-    /// Currently processes only ONE payment per batch (max_payments=1 recommended).
-    /// A production implementation would:
-    /// 1. Chain multiple promises with Promise::and()
-    /// 2. Use callbacks to track async payment results
+    /// The contract automatically determines the optimal batch size based on payment type:
+    /// - Native NEAR: ~100 payments per batch (minimal gas per transfer)
+    /// - NEP-141 FT: ~5 payments per batch (50 TGas per ft_transfer)
+    /// - NEAR Intents: ~5 payments per batch (50 TGas per ft_withdraw)
+    ///
+    /// Worker should always call with 300 TGas for maximum throughput.
+    ///
+    /// # Gas Optimization TODO
+    /// Currently, reading the payment list from storage clones the entire Vec<PaymentRecord>,
+    /// which costs ~156 TGas for 500 payments (~0.6 TGas per record for deserialization).
+    /// This limits practical list size to ~250 payments before exceeding gas limits.
+    /// Future optimization: Use IterableMap for payments instead of Vec to avoid full clone,
+    /// or implement pagination for the payment list.
+    ///
+    /// # Returns
+    /// Number of payments processed in this batch
     ///
     /// # Panics
     /// Panics if there are no pending payments to process
-    pub fn payout_batch(&mut self, list_id: ListId, max_payments: Option<u64>) -> Promise {
-        let max = max_payments.unwrap_or(100).min(100);
-
+    pub fn payout_batch(&mut self, list_id: ListId) -> u64 {
         let mut list = self
             .payment_lists
             .get(&list_id)
@@ -380,83 +389,91 @@ impl BulkPaymentContract {
             "List must be Approved to process payments"
         );
 
-        let mut promise_to_return: Option<Promise> = None;
-        let mut processed = 0;
+        // Determine batch size based on token type
+        // Reserve ~50 TGas for contract overhead, leaving ~250 TGas for payments
+        let max_batch_size: u64 = if list.token_id.starts_with("nep141:") {
+            // NEAR Intents: 50 TGas per ft_withdraw call
+            // 250 TGas / 50 TGas = 5 payments max
+            5
+        } else if list.token_id == "native"
+            || list.token_id == "near"
+            || list.token_id == "NEAR"
+        {
+            // Native NEAR: minimal gas per transfer (~2.5 TGas)
+            // Can process many more, but cap at 100 for safety
+            100
+        } else {
+            // NEP-141 FT: 50 TGas per ft_transfer call
+            // 250 TGas / 50 TGas = 5 payments max
+            5
+        };
+
+        let mut processed: u64 = 0;
 
         for payment in list.payments.iter_mut() {
-            if processed >= max {
+            if processed >= max_batch_size {
                 break;
             }
 
             if matches!(payment.status, PaymentStatus::Pending) {
-                // Process payment based on token type
                 if list.token_id.starts_with("nep141:") {
                     // NEAR Intents - call ft_withdraw on intents.near
-                    // Extract token contract address from "nep141:btc.omft.near" -> "btc.omft.near"
                     let token_contract = list.token_id.strip_prefix("nep141:").unwrap();
 
-                    // Build ft_withdraw args matching JavaScript example:
-                    // {token, receiver_id (both = token contract), amount, memo: "WITHDRAW_TO:{btc_address}"}
-                    let args_json = format!(
-                        r#"{{"token":"{}","receiver_id":"{}","amount":"{}","memo":"WITHDRAW_TO:{}"}}"#,
-                        token_contract,
-                        token_contract, // receiver_id is the token contract, NOT the BTC address
-                        payment.amount.0,
-                        payment.recipient // BTC address goes in memo with WITHDRAW_TO: prefix
-                    );
+                    // PoA tokens require WITHDRAW_TO memo for external chain withdrawals
+                    let is_poa_token = token_contract.ends_with(".omft.near");
 
-                    // Promise::function_call expects raw bytes (the JSON string bytes)
-                    // NEAR will handle the serialization
-                    let p = Promise::new("intents.near".parse().unwrap()).function_call(
+                    let args_json = if is_poa_token {
+                        format!(
+                            r#"{{"token":"{}","receiver_id":"{}","amount":"{}","memo":"WITHDRAW_TO:{}"}}"#,
+                            token_contract,
+                            token_contract,
+                            payment.amount.0,
+                            payment.recipient
+                        )
+                    } else {
+                        format!(
+                            r#"{{"token":"{}","receiver_id":"{}","amount":"{}"}}"#,
+                            token_contract,
+                            payment.recipient,
+                            payment.amount.0
+                        )
+                    };
+
+                    Promise::new("intents.near".parse().unwrap()).function_call(
                         "ft_withdraw".to_string(),
                         args_json.into_bytes(),
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
-
-                    // Only process one payment per call to avoid gas limits
-                    // Batch processing is done by calling payout_batch multiple times
-                    if promise_to_return.is_none() {
-                        promise_to_return = Some(p);
-                    }
                 } else if list.token_id == "native"
                     || list.token_id == "near"
                     || list.token_id == "NEAR"
                 {
                     // Native NEAR transfer
-                    let p = Promise::new(payment.recipient.clone())
+                    Promise::new(payment.recipient.clone())
                         .transfer(NearToken::from_yoctonear(payment.amount.0));
-
-                    // Only process one payment per call to avoid gas limits
-                    if promise_to_return.is_none() {
-                        promise_to_return = Some(p);
-                    }
                 } else {
-                    // NEP-141 fungible token transfer - token_id is the contract address
+                    // NEP-141 fungible token transfer
                     let token_account: AccountId = list
                         .token_id
                         .parse()
                         .expect("Invalid token contract address");
 
-                    // Call ft_transfer on the token contract
                     let args = format!(
                         r#"{{"receiver_id":"{}","amount":"{}"}}"#,
                         payment.recipient, payment.amount.0
                     );
 
-                    let p = Promise::new(token_account).function_call(
+                    Promise::new(token_account).function_call(
                         "ft_transfer".to_string(),
                         args.into_bytes(),
                         NearToken::from_yoctonear(1),
                         Gas::from_tgas(50),
                     );
-
-                    if promise_to_return.is_none() {
-                        promise_to_return = Some(p);
-                    }
                 }
 
-                // Mark as Paid with current block height (for transaction lookup)
+                // Mark as Paid with current block height
                 payment.status = PaymentStatus::Paid {
                     block_height: env::block_height(),
                 };
@@ -464,12 +481,14 @@ impl BulkPaymentContract {
             }
         }
 
+        require!(processed > 0, "No pending payments to process");
+
         // Update the list
         self.payment_lists.insert(list_id.clone(), list);
 
         log!("Processed {} payments for list {}", processed, list_id);
 
-        promise_to_return.expect("No pending payments to process")
+        processed
     }
 
     /// Reject a payment list (only allowed before approval)

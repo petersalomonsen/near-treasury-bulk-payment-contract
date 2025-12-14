@@ -163,7 +163,7 @@ async function setupNearConnection() {
 /**
  * Create a function call proposal in the DAO
  */
-async function createProposal(account, daoAccountId, description, receiverId, methodName, args, deposit) {
+async function createProposal(account, daoAccountId, description, receiverId, methodName, args, deposit, gas = '150000000000000') {
   console.log(`\n📝 Creating proposal: ${description}`);
   
   const proposalArgs = {
@@ -177,7 +177,7 @@ async function createProposal(account, daoAccountId, description, receiverId, me
               method_name: methodName,
               args: Buffer.from(JSON.stringify(args)).toString('base64'),
               deposit: deposit || '0',
-              gas: '150000000000000', // 150 TGas
+              gas: gas,
             },
           ],
         },
@@ -470,99 +470,80 @@ for (let i = 0; i < nonRegisteredRecipients.length; i++) {
 
 console.log(`✅ Generated ${payments.length} payments`);
 
-// Step 9: Generate list_id and submit via proposal
+// Step 9: Generate list_id
 const listId = generateListId(daoAccountId, CONFIG.WRAP_TOKEN_ID, payments);
 console.log(`\n🔑 Generated list_id: ${listId}`);
-
-// Step 10: Submit payment list via DAO proposal
-console.log('\n📤 Submitting payment list via DAO proposal...');
-const submitProposalId = await createProposal(
-  genesisAccount,
-  daoAccountId,
-  `Submit fungible token payment list (${payments.length} recipients)`,
-  CONFIG.BULK_PAYMENT_CONTRACT_ID,
-  'submit_list',
-  {
-    token_id: CONFIG.WRAP_TOKEN_ID,
-    payments: payments,
-  },
-  '0'
-);
-
-await approveProposal(genesisAccount, daoAccountId, submitProposalId);
-await sleep(2000); // Wait for execution
-
-console.log(`✅ Payment list submitted`);
-
-// Step 11: Approve payment list via DAO proposals
-console.log('\n✅ Approving payment list via DAO proposals...');
 
 const totalAmount = payments.reduce((sum, p) => sum + BigInt(p.amount), 0n);
 console.log(`💸 Total payment amount: ${totalAmount.toString()} tokens`);
 
-// First proposal: Transfer tokens to bulk payment contract
-console.log('\n📝 Creating proposal to transfer tokens to bulk payment contract...');
-const transferProposalId = await createProposal(
+// Step 10: Create DAO proposal for ft_transfer_call BEFORE API submission
+// This is required - the API will verify this proposal exists
+console.log('\n📝 Creating DAO proposal for ft_transfer_call before API submission...');
+const ftTransferProposalId = await createProposal(
   genesisAccount,
   daoAccountId,
-  `Transfer ${totalAmount.toString()} wNEAR to bulk payment contract`,
+  `FT bulk payment list: ${listId}`, // Include list_id in description for verification
   CONFIG.WRAP_TOKEN_ID,
-  'ft_transfer',
+  'ft_transfer_call',
   {
     receiver_id: CONFIG.BULK_PAYMENT_CONTRACT_ID,
     amount: totalAmount.toString(),
+    msg: listId, // list_id is passed as msg to ft_on_transfer
   },
   '1' // 1 yoctoNEAR for security
 );
 
-await approveProposal(genesisAccount, daoAccountId, transferProposalId);
+// Step 11: Submit payment list via API (requires DAO proposal to exist)
+// The API will verify the DAO proposal exists and track the list for the worker
+console.log('\n📤 Submitting payment list via API...');
+const submitResponse = await apiRequest('/submit-list', 'POST', {
+  list_id: listId,
+  submitter_id: daoAccountId,
+  dao_contract_id: daoAccountId,
+  token_id: CONFIG.WRAP_TOKEN_ID,
+  payments: payments,
+});
+
+assert.equal(submitResponse.success, true, `API submit must succeed: ${submitResponse.error}`);
+assert.equal(submitResponse.list_id, listId, 'Returned list_id must match submitted');
+console.log(`✅ Payment list submitted via API with ID: ${listId}`);
+
+// Step 12: Approve the DAO proposal (executes ft_transfer_call → ft_on_transfer)
+console.log('\n✅ Approving ft_transfer_call proposal...');
+await approveProposal(genesisAccount, daoAccountId, ftTransferProposalId);
 await sleep(2000); // Wait for execution
 
-console.log(`✅ Tokens transferred to bulk payment contract`);
+console.log(`✅ Payment list approved via ft_transfer_call`);
 
-// Second proposal: Approve the list
-console.log('\n📝 Creating proposal to approve payment list...');
-const approveProposalId = await createProposal(
-  genesisAccount,
-  daoAccountId,
-  `Approve payment list ${listId}`,
-  CONFIG.BULK_PAYMENT_CONTRACT_ID,
-  'approve_list',
-  { list_id: listId },
-  '0'
-);
-
-await approveProposal(genesisAccount, daoAccountId, approveProposalId);
-await sleep(2000); // Wait for execution
-
-console.log(`✅ Payment list approved`);
-
-// Step 12: Wait for processing
-console.log('\n⏳ Waiting for payment processing...');
+// Step 13: Wait for payout processing (background worker processes approved lists)
+// The API worker automatically calls payout_batch with 300 TGas
+// Contract auto-determines batch size (5 for FT payments)
+console.log('\n⏳ Waiting for payout processing (API worker)...');
 let allProcessed = false;
 let attempts = 0;
-const maxAttempts = 60;
+const maxAttempts = 60; // 5 minutes at 5-second intervals
 
 while (!allProcessed && attempts < maxAttempts) {
   await sleep(5000);
   attempts++;
   
-  const listStatus = await viewPaymentList(genesisAccount, listId);
-  const processedCount = listStatus.payments.filter(p => 
-    p.status && p.status.Paid && typeof p.status.Paid.block_height === 'number'
-  ).length;
+  const currentStatus = await apiRequest(`/list/${listId}`);
+  assert.equal(currentStatus.success, true, `Must be able to get list status: ${currentStatus.error}`);
   
-  const progress = ((processedCount / listStatus.payments.length) * 100).toFixed(1);
-  console.log(`📊 Progress: ${processedCount}/${listStatus.payments.length} (${progress}%)`);
+  const { list } = currentStatus;
+  const progress = ((list.processed_payments / list.total_payments) * 100).toFixed(1);
+  console.log(`📊 Progress: ${list.processed_payments}/${list.total_payments} (${progress}%)`);
   
-  if (processedCount === listStatus.payments.length) {
+  // All payments are complete when there are no pending payments
+  if (list.pending_payments === 0) {
     allProcessed = true;
   }
 }
 
 assert.equal(allProcessed, true, 'All payments must complete within timeout');
 
-// Step 13: Verify all payments have block_height
+// Step 14: Verify all payments have block_height
 console.log('\n🔍 Verifying all payments have block_height...');
 const finalStatus = await viewPaymentList(genesisAccount, listId);
 
@@ -579,73 +560,12 @@ assert.equal(
 );
 console.log(`✅ All payments have block_height registered`);
 
-// Step 14: Verify transactions and receipts
-console.log('\n🔗 Verifying payment transactions and receipts...');
-
-const rpcClient = new NearRpcClient({ endpoint: CONFIG.SANDBOX_RPC_URL });
+// Step 15: Verify token balances directly
+// For FT payments, we verify by checking actual token balances rather than transaction lookups
+// because FT transfers go to the token contract (wrap.near), not bulk-payment.near
+console.log('\n💰 Verifying token balance changes...');
 let successfulTransfers = [];
 let failedTransfers = [];
-
-for (const payment of finalStatus.payments) {
-  const recipient = payment.recipient;
-  const isRegistered = registeredRecipients.includes(recipient);
-  
-  console.log(`\n📦 Checking ${isRegistered ? 'REGISTERED' : 'NON-REGISTERED'}: ${recipient.substring(0, 20)}...`);
-  
-  // Get transaction hash from API
-  const txResponse = await apiRequest(`/list/${listId}/transaction/${recipient}`);
-  assert.equal(txResponse.success, true, `Must be able to get transaction for ${recipient}`);
-  
-  const txHash = txResponse.transaction_hash;
-  console.log(`   Transaction hash: ${txHash.substring(0, 16)}...`);
-  
-  // Get transaction status
-  const txStatus = await rpcTx(rpcClient, { txHash, senderAccountId: CONFIG.BULK_PAYMENT_CONTRACT_ID });
-  
-  // Check if THIS specific recipient has a failed receipt
-  // In batched transactions, multiple recipients share the same transaction,
-  // so we must filter for failures related to this specific recipient
-  const recipientFailedReceipt = txStatus.receiptsOutcome.find(ro => {
-    if (!ro.outcome.status?.Failure) return false;
-    
-    const failure = ro.outcome.status.Failure;
-    
-    // Check if the failure is for this specific recipient by looking at:
-    // 1. The accountId in AccountDoesNotExist errors
-    // 2. The receiver_id field on the receipt outcome
-    const accountId = failure?.ActionError?.kind?.AccountDoesNotExist?.accountId;
-    if (accountId === recipient) return true;
-    
-    // Also check receiver_id on the outcome
-    if (ro.outcome.executor_id === recipient || ro.outcome.receiver_id === recipient) {
-      return true;
-    }
-    
-    return false;
-  });
-  
-  if (recipientFailedReceipt) {
-    console.log(`   ❌ Transaction failed for this recipient`);
-    console.log(`      Failure: ${JSON.stringify(recipientFailedReceipt.outcome.status.Failure)}`);
-    failedTransfers.push({ recipient, isRegistered, txHash, failure: recipientFailedReceipt.outcome.status.Failure });
-    
-    // Fail immediately if a registered account has failed transfer (unexpected)
-    if (isRegistered) {
-      assert.fail(`Unexpected failure for registered account ${recipient}: ${JSON.stringify(recipientFailedReceipt.outcome.status.Failure)}`);
-    }
-  } else {
-    console.log(`   ✅ Transaction succeeded for this recipient`);
-    successfulTransfers.push({ recipient, isRegistered, txHash });
-    
-    // Fail immediately if a non-registered account has successful transfer (unexpected)
-    if (!isRegistered) {
-      assert.fail(`Unexpected success for non-registered account ${recipient}`);
-    }
-  }
-}
-
-// Step 15: Verify balance changes
-console.log('\n💰 Verifying token balance changes...');
 
 for (const recipient of registeredRecipients) {
   const balance = await getTokenBalance(genesisAccount, CONFIG.WRAP_TOKEN_ID, recipient);
@@ -654,6 +574,7 @@ for (const recipient of registeredRecipients) {
   console.log(`✅ Registered ${recipient.substring(0, 16)}...: balance = ${balance}`);
   assert.ok(BigInt(balance) >= BigInt(payment.amount), 
     `Registered account ${recipient} must have balance >= ${payment.amount}, got ${balance}`);
+  successfulTransfers.push({ recipient, isRegistered: true, balance });
 }
 
 for (const recipient of nonRegisteredRecipients) {
@@ -661,6 +582,7 @@ for (const recipient of nonRegisteredRecipients) {
   console.log(`ℹ️  Non-registered ${recipient.substring(0, 16)}...: balance = ${balance}`);
   assert.equal(balance, '0', 
     `Non-registered account ${recipient} must have 0 balance, got ${balance}`);
+  failedTransfers.push({ recipient, isRegistered: false, balance });
 }
 
 // Step 16: Validate expectations
