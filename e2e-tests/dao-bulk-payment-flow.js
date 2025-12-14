@@ -83,8 +83,10 @@ function formatNEAR(yoctoNear) {
  * Generate an implicit account ID (64 character hex string)
  */
 function generateImplicitAccountId(index) {
-  // Generate a deterministic hex string based on index
-  const hex = index.toString(16).padStart(8, '0');
+  // Use modulo to ensure index fits in 8 hex digits (max 0xFFFFFFFF = 4,294,967,295)
+  // This prevents overflow when using large timestamps
+  const idx = index % 0x100000000;
+  const hex = idx.toString(16).padStart(8, '0');
   return hex.repeat(8); // 64 characters
 }
 
