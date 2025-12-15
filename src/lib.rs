@@ -400,10 +400,7 @@ impl BulkPaymentContract {
         let gas_per_payment: Gas = if list.token_id.starts_with("nep141:") {
             // NEAR Intents: ft_withdraw cross-contract call
             Gas::from_tgas(50)
-        } else if list.token_id == "native"
-            || list.token_id == "near"
-            || list.token_id == "NEAR"
-        {
+        } else if list.token_id == "native" || list.token_id == "near" || list.token_id == "NEAR" {
             // Native NEAR: minimal gas per transfer
             Gas::from_tgas(3)
         } else {
@@ -450,17 +447,12 @@ impl BulkPaymentContract {
                     let args_json = if is_poa_token {
                         format!(
                             r#"{{"token":"{}","receiver_id":"{}","amount":"{}","memo":"WITHDRAW_TO:{}"}}"#,
-                            token_contract,
-                            token_contract,
-                            payment.amount.0,
-                            payment.recipient
+                            token_contract, token_contract, payment.amount.0, payment.recipient
                         )
                     } else {
                         format!(
                             r#"{{"token":"{}","receiver_id":"{}","amount":"{}"}}"#,
-                            token_contract,
-                            payment.recipient,
-                            payment.amount.0
+                            token_contract, payment.recipient, payment.amount.0
                         )
                     };
 

@@ -476,7 +476,7 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         let remaining: u64 = processed_log
             .split_whitespace()
             .rev()
-            .nth(1)  // Second from end is the count ("X remaining")
+            .nth(1) // Second from end is the count ("X remaining")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         if remaining == 0 {
@@ -1440,7 +1440,10 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // Query the contract for the exact storage cost
     let num_records = 25u64;
     let storage_cost: NearToken = near_api::Contract(contract_id.clone())
-        .call_function("calculate_storage_cost", json!({ "num_records": num_records }))?
+        .call_function(
+            "calculate_storage_cost",
+            json!({ "num_records": num_records }),
+        )?
         .read_only()
         .fetch_from(&network_config)
         .await?
