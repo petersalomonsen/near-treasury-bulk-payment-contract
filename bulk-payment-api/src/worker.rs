@@ -169,14 +169,18 @@ impl PayoutWorker {
             .await?;
 
         info!(
-            "Processed {} payments for list {}, {} remaining",
-            processed,
-            list_id,
-            pending_count.saturating_sub(processed as usize)
+            "Processed {} payments for list {}, checking for remaining",
+            processed, list_id
         );
 
-        // Check if complete
+        // Check if complete by querying the list directly
+        // The contract now returns the remaining count, but we double-check by viewing the list
         let has_pending = self.client.has_pending_payments(list_id).await?;
+
+        if has_pending {
+            info!("List {} still has pending payments, will process again", list_id);
+        }
+
         Ok(!has_pending)
     }
 }

@@ -425,11 +425,13 @@ impl BulkPaymentClient {
         }
 
         // Parse processed count from logs (uses logs() to get logs from all receipts)
+        // Log format: "Processed X payments for list Y, Z remaining"
         let processed = result
             .logs()
             .iter()
             .find_map(|log| {
-                if log.starts_with("Processed ") {
+                if log.starts_with("Processed ") && log.contains(" payments for list ") {
+                    // Extract the first number after "Processed "
                     log.split_whitespace().nth(1).and_then(|s| s.parse().ok())
                 } else {
                     None
@@ -437,7 +439,26 @@ impl BulkPaymentClient {
             })
             .unwrap_or(0);
 
-        debug!("Processed {} payments in batch", processed);
+        // Also parse the remaining count for logging
+        let remaining = result
+            .logs()
+            .iter()
+            .find_map(|log| {
+                if log.contains(" remaining") {
+                    // Extract the number before " remaining"
+                    log.split(", ")
+                        .last()
+                        .and_then(|s| s.trim_end_matches(" remaining").parse().ok())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0u64);
+
+        debug!(
+            "Processed {} payments in batch, {} remaining",
+            processed, remaining
+        );
         Ok(processed)
     }
 

@@ -578,64 +578,58 @@ for (let i = 0; i < nonRegisteredRecipients.length; i++) {
 
 console.log(`✅ Generated ${payments.length} payments`);
 
-// Step 9: Generate list_id and submit via proposal
+// Step 9: Generate list_id
 // Use nep141: prefix for NEAR Intents token format
 const tokenIdForList = `nep141:${CONFIG.WRAP_TOKEN_ID}`;
 const listId = generateListId(daoAccountId, tokenIdForList, payments);
 console.log(`\n🔑 Generated list_id: ${listId}`);
 console.log(`🔖 Token ID: ${tokenIdForList}`);
 
-// Step 10: Submit payment list via DAO proposal
-console.log('\n📤 Submitting payment list via DAO proposal...');
-const submitProposalId = await createProposal(
-  genesisAccount,
-  daoAccountId,
-  `Submit NEAR Intents payment list (${payments.length} recipients)`,
-  CONFIG.BULK_PAYMENT_CONTRACT_ID,
-  'submit_list',
-  {
-    list_id: listId,
-    token_id: tokenIdForList,
-    payments: payments,
-  },
-  '0'
-);
-
-await approveProposal(genesisAccount, daoAccountId, submitProposalId);
-await sleep(2000); // Wait for execution
-
-console.log(`✅ Payment list submitted`);
-
-// Step 11: Approve payment list via DAO proposals using mt_transfer_call
-console.log('\n✅ Approving payment list via DAO proposal (mt_transfer_call)...');
-
 const totalAmount = payments.reduce((sum, p) => sum + BigInt(p.amount), 0n);
 console.log(`💸 Total payment amount: ${totalAmount.toString()} tokens`);
 
-// Create proposal to transfer tokens via mt_transfer_call which approves the list
-console.log('\n📝 Creating proposal to transfer tokens via mt_transfer_call...');
-const transferProposalId = await createProposal(
+// Step 10: Create DAO proposal for mt_transfer_call BEFORE API submission
+// This is required - the API will verify this proposal exists
+console.log('\n📝 Creating DAO proposal for mt_transfer_call before API submission...');
+const mtTransferProposalId = await createProposal(
   genesisAccount,
   daoAccountId,
-  `Transfer ${totalAmount.toString()} tokens via mt_transfer_call to approve list ${listId}`,
+  `MT bulk payment list: ${listId}`, // Include list_id in description for verification
   CONFIG.INTENTS_CONTRACT_ID,
   'mt_transfer_call',
   {
     receiver_id: CONFIG.BULK_PAYMENT_CONTRACT_ID,
     token_id: tokenIdForList,
     amount: totalAmount.toString(),
-    msg: listId,  // Just the list_id string, not JSON wrapped
+    msg: listId,  // list_id is passed as msg to mt_on_transfer
   },
   '1' // 1 yoctoNEAR for security
 );
 
-await approveProposal(genesisAccount, daoAccountId, transferProposalId);
+// Step 11: Submit payment list via API (requires DAO proposal to exist)
+// The API will verify the DAO proposal exists and track the list for the worker
+console.log('\n📤 Submitting payment list via API...');
+const submitResponse = await apiRequest('/submit-list', 'POST', {
+  list_id: listId,
+  submitter_id: daoAccountId,
+  dao_contract_id: daoAccountId,
+  token_id: tokenIdForList,
+  payments: payments,
+});
+
+assert.equal(submitResponse.success, true, `API submit must succeed: ${submitResponse.error}`);
+assert.equal(submitResponse.list_id, listId, 'Returned list_id must match submitted');
+console.log(`✅ Payment list submitted via API with ID: ${listId}`);
+
+// Step 12: Approve the DAO proposal (executes mt_transfer_call → mt_on_transfer)
+console.log('\n✅ Approving mt_transfer_call proposal...');
+await approveProposal(genesisAccount, daoAccountId, mtTransferProposalId);
 await sleep(2000); // Wait for execution
 
 console.log(`✅ Payment list approved via mt_transfer_call`);
 
-// Step 12: Wait for payout processing (background worker processes approved lists)
-console.log('\n⏳ Waiting for payout processing...');
+// Step 13: Wait for payout processing (background worker processes approved lists)
+console.log('\n⏳ Waiting for payout processing (API worker)...');
 let allProcessed = false;
 let attempts = 0;
 const maxAttempts = 60; // 5 minutes at 5-second intervals
@@ -659,7 +653,7 @@ while (!allProcessed && attempts < maxAttempts) {
 
 assert.equal(allProcessed, true, 'All payments must complete within timeout');
 
-// Step 13: Verify all payments have block_height
+// Step 14: Verify all payments have block_height
 console.log('\n🔍 Verifying all payments have block_height...');
 const finalStatus = await viewPaymentList(genesisAccount, listId);
 
@@ -676,7 +670,7 @@ assert.equal(
 );
 console.log(`✅ All payments have block_height registered`);
 
-// Step 14: Verify token balance changes
+// Step 15: Verify token balance changes
 // For intents payments, we verify by checking token balances directly
 // After ft_withdraw from intents.near, tokens go to the underlying wrap.near contract
 console.log('\n💰 Verifying wrap.near token balance changes...');
@@ -702,7 +696,7 @@ for (const recipient of nonRegisteredRecipients) {
   failedTransfers.push({ recipient, isRegistered: false });
 }
 
-// Step 15: Validate expectations
+// Step 16: Validate expectations
 console.log('\n=====================================');
 console.log('📊 Test Summary');
 console.log('=====================================');
