@@ -360,6 +360,31 @@ async fn import_contract(
             .await
             .context(format!("Failed to deploy {} with init", account_id))?
             .assert_success();
+    } else if mainnet_account_id == "intents.near" {
+        // intents.near requires special initialization with config
+        // Based on: https://github.com/NEAR-DevHub/near-treasury/blob/staging/playwright-tests/tests/intents/payment-request-ui.spec.js#L119-L133
+        near_api::Contract::deploy(account_id.clone())
+            .use_code(contract_code)
+            .with_init_call("new", serde_json::json!({
+                "config": {
+                    "wnear_id": "wrap.near",
+                    "fees": {
+                        "fee": 100,
+                        "fee_collector": account_id.to_string()
+                    },
+                    "roles": {
+                        "super_admins": [account_id.to_string()],
+                        "admins": {},
+                        "grantees": {}
+                    }
+                }
+            }))
+            .unwrap()
+            .with_signer(account_signer.clone())
+            .send_to(network_config)
+            .await
+            .context(format!("Failed to deploy {} with init", account_id))?
+            .assert_success();
     } else {
         // For other contracts, skip initialization (already initialized on mainnet)
         near_api::Contract::deploy(account_id.clone())
@@ -618,6 +643,9 @@ async fn main() -> Result<()> {
         {
             error!("Failed to initialize sputnik-dao.near: {}", e);
         }
+
+        // Note: wrap.near is registered with intents.near via wnear_id in the config during initialization
+        // No separate storage_deposit call is needed for the token itself
 
         // Create and deploy bulk payment contract
         // Use 'near' as parent since it's a root account in sandbox

@@ -106,6 +106,7 @@ cargo fmt
 
 - Write unit tests in the `tests` module within `lib.rs` (11 tests covering all features)
 - Write integration tests in `tests/integration_tests.rs` (9 comprehensive end-to-end tests)
+- Write E2E tests in `e2e-tests/` directory using JavaScript/Node.js
 - Use `near-sdk` unit-testing features for contract testing
 - Use `near-sandbox` and `near-api` for integration testing
 - Test with random payment amounts to verify correct routing (not fixed amounts)
@@ -115,6 +116,30 @@ cargo fmt
 - Mock external calls and test error conditions
 - Verify storage operations and gas usage
 - Test edge cases around payment status transitions and authorization
+
+### Hard Assertions Required
+
+**All test verifications MUST use hard assertions (`assert`, `assert.equal`, `assert.ok`, `assert.fail`) - NEVER just `console.log` with if/else.** Tests must actually fail when expectations aren't met.
+
+❌ **Wrong** - test passes even when expectation fails:
+```javascript
+if (balance >= expectedAmount) {
+  console.log(`✅ Balance correct`);
+} else {
+  console.log(`❌ Balance wrong`);  // Just logs, test continues and passes!
+}
+```
+
+✅ **Correct** - test fails when expectation fails:
+```javascript
+assert.ok(balance >= expectedAmount, `Balance ${balance} must be >= ${expectedAmount}`);
+```
+
+This applies to:
+- Balance verifications (registered accounts must receive expected amounts)
+- Zero-balance assertions (non-registered accounts must have 0 balance)
+- Transaction success/failure outcomes (fail immediately on unexpected results)
+- API response validations (don't silently skip errors)
 
 ## When Adding New Features
 

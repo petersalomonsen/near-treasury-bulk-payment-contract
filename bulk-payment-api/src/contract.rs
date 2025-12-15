@@ -402,23 +402,15 @@ impl BulkPaymentClient {
     }
 
     /// Execute payout batch for a payment list
-    pub async fn payout_batch(
-        &self,
-        caller_id: &str,
-        list_id: &str,
-        max_payments: Option<u64>,
-    ) -> Result<u64> {
-        debug!(
-            "Executing payout batch for list: {} with max_payments: {:?}",
-            list_id, max_payments
-        );
+    /// Contract auto-determines optimal batch size based on token type
+    pub async fn payout_batch(&self, caller_id: &str, list_id: &str) -> Result<u64> {
+        debug!("Executing payout batch for list: {}", list_id);
 
         let result = Contract(self.contract_id.parse()?)
             .call_function(
                 "payout_batch",
                 json!({
-                    "list_id": list_id,
-                    "max_payments": max_payments
+                    "list_id": list_id
                 }),
             )?
             .transaction()
@@ -433,11 +425,13 @@ impl BulkPaymentClient {
         }
 
         // Parse processed count from logs (uses logs() to get logs from all receipts)
+        // Log format: "Processed X payments for list Y, Z remaining"
         let processed = result
             .logs()
             .iter()
             .find_map(|log| {
-                if log.starts_with("Processed ") {
+                if log.starts_with("Processed ") && log.contains(" payments for list ") {
+                    // Extract the first number after "Processed "
                     log.split_whitespace().nth(1).and_then(|s| s.parse().ok())
                 } else {
                     None
@@ -445,7 +439,26 @@ impl BulkPaymentClient {
             })
             .unwrap_or(0);
 
-        debug!("Processed {} payments in batch", processed);
+        // Also parse the remaining count for logging
+        let remaining = result
+            .logs()
+            .iter()
+            .find_map(|log| {
+                if log.contains(" remaining") {
+                    // Extract the number before " remaining"
+                    log.split(", ")
+                        .last()
+                        .and_then(|s| s.trim_end_matches(" remaining").parse().ok())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0u64);
+
+        debug!(
+            "Processed {} payments in batch, {} remaining",
+            processed, remaining
+        );
         Ok(processed)
     }
 

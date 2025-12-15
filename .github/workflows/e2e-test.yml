@@ -96,7 +96,7 @@ jobs:
           SANDBOX_RPC_URL: http://localhost:3030
           API_URL: http://localhost:8080
           NUM_RECIPIENTS: '100'  # Reduced for CI to speed up tests
-        run: npm run test:docker
+        run: npm run test:all:docker
       
       - name: Run E2E tests against Fly.io
         if: ${{ inputs.fly_app_url }}
@@ -105,7 +105,7 @@ jobs:
           SANDBOX_RPC_URL: ${{ inputs.fly_app_url }}:3030
           API_URL: ${{ inputs.fly_app_url }}:8080
           NUM_RECIPIENTS: '100'
-        run: npm test
+        run: npm run test:all
       
       - name: Show Docker logs on failure
         if: failure() && !inputs.fly_app_url

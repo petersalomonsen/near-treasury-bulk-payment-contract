@@ -17,8 +17,6 @@ use crate::contract::{BulkPaymentClient, ListStatus};
 pub struct WorkerConfig {
     /// How often to poll for approved lists (in seconds)
     pub poll_interval: u64,
-    /// Maximum payments to process per batch
-    pub max_payments_per_batch: u64,
     /// Caller account ID for executing payouts
     pub caller_id: String,
 }
@@ -27,7 +25,6 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             poll_interval: 5,
-            max_payments_per_batch: 10, // Keep small to avoid gas issues
             caller_id: "test.near".to_string(),
         }
     }
@@ -165,25 +162,25 @@ impl PayoutWorker {
             list_id, pending_count
         );
 
-        // Execute payout batch
+        // Execute payout batch (contract auto-determines batch size)
         let processed = self
             .client
-            .payout_batch(
-                &self.config.caller_id,
-                list_id,
-                Some(self.config.max_payments_per_batch),
-            )
+            .payout_batch(&self.config.caller_id, list_id)
             .await?;
 
         info!(
-            "Processed {} payments for list {}, {} remaining",
-            processed,
-            list_id,
-            pending_count.saturating_sub(processed as usize)
+            "Processed {} payments for list {}, checking for remaining",
+            processed, list_id
         );
 
-        // Check if complete
+        // Check if complete by querying the list directly
+        // The contract now returns the remaining count, but we double-check by viewing the list
         let has_pending = self.client.has_pending_payments(list_id).await?;
+
+        if has_pending {
+            info!("List {} still has pending payments, will process again", list_id);
+        }
+
         Ok(!has_pending)
     }
 }

@@ -72,7 +72,6 @@ async fn main() -> Result<()> {
     // Start the background worker
     let worker_config = WorkerConfig {
         poll_interval: 5,
-        max_payments_per_batch: 10, // Keep small to avoid gas issues
         caller_id: worker_caller,
     };
     let worker = PayoutWorker::new(client, worker_config, pending_lists);
