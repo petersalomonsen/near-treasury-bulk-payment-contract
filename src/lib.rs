@@ -358,12 +358,16 @@ impl BulkPaymentContract {
 
     /// Process payments in batches (public function, anyone can call)
     ///
-    /// The contract automatically determines the optimal batch size based on payment type:
-    /// - Native NEAR: ~100 payments per batch (minimal gas per transfer)
-    /// - NEP-141 FT: ~5 payments per batch (50 TGas per ft_transfer)
-    /// - NEAR Intents: ~5 payments per batch (50 TGas per ft_withdraw)
+    /// The contract uses dynamic gas metering to process as many payments as possible
+    /// within the available gas. It checks remaining gas before each payment and stops
+    /// when there's not enough gas for another payment plus reserve for final operations.
     ///
-    /// Worker should always call with 300 TGas for maximum throughput.
+    /// Gas costs per payment type:
+    /// - Native NEAR: ~3 TGas per transfer
+    /// - NEP-141 FT: ~50 TGas per ft_transfer
+    /// - NEAR Intents: ~50 TGas per ft_withdraw
+    ///
+    /// Worker should call with 300 TGas for maximum throughput.
     ///
     /// # Gas Optimization TODO
     /// Currently, reading the payment list from storage clones the entire Vec<PaymentRecord>,
@@ -373,10 +377,13 @@ impl BulkPaymentContract {
     /// or implement pagination for the payment list.
     ///
     /// # Returns
-    /// Number of payments processed in this batch
+    /// Number of remaining pending payments after this batch. Returns 0 when all payments
+    /// are complete. The caller should keep calling until this returns 0.
     ///
     /// # Panics
-    /// Panics if there are no pending payments to process
+    /// - If the payment list is not found
+    /// - If the list is not in Approved status
+    /// - If there's not enough gas to process at least one payment
     pub fn payout_batch(&mut self, list_id: ListId) -> u64 {
         let mut list = self
             .payment_lists
@@ -389,33 +396,50 @@ impl BulkPaymentContract {
             "List must be Approved to process payments"
         );
 
-        // Determine batch size based on token type
-        // Reserve ~50 TGas for contract overhead, leaving ~250 TGas for payments
-        let max_batch_size: u64 = if list.token_id.starts_with("nep141:") {
-            // NEAR Intents: 50 TGas per ft_withdraw call
-            // 250 TGas / 50 TGas = 5 payments max
-            5
+        // Determine gas needed per payment based on token type
+        let gas_per_payment: Gas = if list.token_id.starts_with("nep141:") {
+            // NEAR Intents: ft_withdraw cross-contract call
+            Gas::from_tgas(50)
         } else if list.token_id == "native"
             || list.token_id == "near"
             || list.token_id == "NEAR"
         {
-            // Native NEAR: minimal gas per transfer (~2.5 TGas)
-            // Can process many more, but cap at 100 for safety
-            100
+            // Native NEAR: minimal gas per transfer
+            Gas::from_tgas(3)
         } else {
-            // NEP-141 FT: 50 TGas per ft_transfer call
-            // 250 TGas / 50 TGas = 5 payments max
-            5
+            // NEP-141 FT: ft_transfer cross-contract call
+            Gas::from_tgas(50)
         };
 
+        // Reserve gas for final operations (storing list, logging)
+        let gas_reserve = Gas::from_tgas(15);
+
         let mut processed: u64 = 0;
+        let mut first_pending_found = false;
 
         for payment in list.payments.iter_mut() {
-            if processed >= max_batch_size {
-                break;
-            }
-
             if matches!(payment.status, PaymentStatus::Pending) {
+                // Check if we have enough gas for this payment
+                let gas_remaining = env::prepaid_gas()
+                    .as_gas()
+                    .saturating_sub(env::used_gas().as_gas());
+
+                if gas_remaining < gas_per_payment.as_gas() + gas_reserve.as_gas() {
+                    // Not enough gas for another payment
+                    if !first_pending_found {
+                        // Haven't processed any payments yet - panic
+                        env::panic_str(&format!(
+                            "Insufficient gas to process payments. Need at least {} TGas, have {} TGas remaining",
+                            (gas_per_payment.as_gas() + gas_reserve.as_gas()) / 1_000_000_000_000,
+                            gas_remaining / 1_000_000_000_000
+                        ));
+                    }
+                    // Already processed some, stop and let caller call again
+                    break;
+                }
+
+                first_pending_found = true;
+
                 if list.token_id.starts_with("nep141:") {
                     // NEAR Intents - call ft_withdraw on intents.near
                     let token_contract = list.token_id.strip_prefix("nep141:").unwrap();
@@ -481,14 +505,24 @@ impl BulkPaymentContract {
             }
         }
 
-        require!(processed > 0, "No pending payments to process");
-
         // Update the list
-        self.payment_lists.insert(list_id.clone(), list);
+        self.payment_lists.insert(list_id.clone(), list.clone());
 
-        log!("Processed {} payments for list {}", processed, list_id);
+        // Count remaining pending payments
+        let remaining_pending = list
+            .payments
+            .iter()
+            .filter(|p| matches!(p.status, PaymentStatus::Pending))
+            .count() as u64;
 
-        processed
+        log!(
+            "Processed {} payments for list {}, {} remaining",
+            processed,
+            list_id,
+            remaining_pending
+        );
+
+        remaining_pending
     }
 
     /// Reject a payment list (only allowed before approval)

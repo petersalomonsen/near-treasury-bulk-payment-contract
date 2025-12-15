@@ -452,10 +452,11 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .assert_success();
 
-    // Process batches - contract auto-batches at 100 for native NEAR
-    // 250 payments requires 3 batches (100 + 100 + 50)
-    for _batch in 0..3 {
-        near_api::Contract(contract_id.clone())
+    // Process batches until all payments are complete
+    // payout_batch logs "Processed X payments for list Y, Z remaining"
+    // Keep calling until remaining is 0
+    loop {
+        let result = near_api::Contract(contract_id.clone())
             .call_function("payout_batch", json!({ "list_id": list_id }))
             .unwrap()
             .transaction()
@@ -463,8 +464,24 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
             .with_signer(user_id.clone(), user_signer.clone())
             .send_to(&network_config)
             .await
-            .unwrap()
-            .assert_success();
+            .unwrap();
+
+        // Clone result to get logs, then check success
+        let result_clone = result.clone();
+        let logs = result_clone.logs();
+        result.assert_success();
+
+        // Parse remaining count from logs
+        let processed_log = logs.iter().find(|log| log.contains("remaining")).unwrap();
+        let remaining: u64 = processed_log
+            .split_whitespace()
+            .rev()
+            .nth(1)  // Second from end is the count ("X remaining")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if remaining == 0 {
+            break;
+        }
     }
 
     // Verify all recipients received their payments with correct varying amounts
@@ -743,10 +760,12 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         "List should be approved after ft_transfer_call"
     );
 
-    // Process payments - contract auto-batches at 5 for FT transfers
-    // 100 payments requires 20 batches (100 / 5 = 20)
-    for batch in 0..20 {
-        near_api::Contract(contract_id.clone())
+    // Process payments until all are complete
+    // payout_batch logs "Processed X payments for list Y, Z remaining"
+    let mut batch = 0;
+    loop {
+        batch += 1;
+        let result = near_api::Contract(contract_id.clone())
             .call_function("payout_batch", json!({ "list_id": list_id }))
             .unwrap()
             .transaction()
@@ -754,17 +773,34 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             .with_signer(user_id.clone(), user_signer.clone())
             .send_to(&network_config)
             .await
-            .unwrap()
-            .assert_success();
+            .unwrap();
 
-        if (batch + 1) % 5 == 0 {
+        // Clone result to get logs, then check success
+        let result_clone = result.clone();
+        let logs = result_clone.logs();
+        result.assert_success();
+
+        // Parse remaining count from logs
+        let processed_log = logs.iter().find(|log| log.contains("remaining")).unwrap();
+        let remaining: u64 = processed_log
+            .split_whitespace()
+            .rev()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        if batch % 5 == 0 {
             println!(
-                "Processed {} of 20 batches ({} payments complete)",
-                batch + 1,
-                (batch + 1) * 5
+                "Processed batch {}, {} payments remaining",
+                batch, remaining
             );
         }
+
+        if remaining == 0 {
+            break;
+        }
     }
+    println!("All payments complete after {} batches", batch);
 
     // Verify all 100 recipients received their wNEAR payments with correct varying amounts
     for (i, recipient) in recipients.iter().enumerate() {
@@ -1692,37 +1728,14 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     // - intents.near handles BTC transfer to bc1 addresses
     // - Contract tracks payment status
 
-    // Contract auto-batches at 5 for intents payments
+    // Contract uses dynamic gas metering for intents payments
     let mut total_mt_burn_events = 0;
     let mut total_ft_burn_events = 0;
     let mut batch_num = 0;
 
     // Loop until all payments are processed
+    // payout_batch returns the number of remaining pending payments
     loop {
-        // Check if there are still pending payments
-        let list: serde_json::Value = near_api::Contract(contract_id.clone())
-            .call_function("view_list", json!({ "list_id": list_id }))?
-            .read_only()
-            .fetch_from(&network_config)
-            .await?
-            .data;
-
-        let pending_count = list["payments"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|p| p["status"] == "Pending")
-            .count();
-
-        // Debug: print first payment status
-        let first_payment = &list["payments"].as_array().unwrap()[0];
-        println!("  Pending payments remaining: {}, first payment status: {:?}", pending_count, first_payment["status"]);
-
-        if pending_count == 0 {
-            println!("✓ All payments processed after {} batches", batch_num);
-            break;
-        }
-
         batch_num += 1;
         let result = near_api::Contract(contract_id.clone())
             .call_function("payout_batch", json!({ "list_id": list_id }))?
@@ -1754,18 +1767,26 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         total_mt_burn_events += mt_burns;
         total_ft_burn_events += ft_burns;
 
-        // Print progress
-        let processed_count: u64 = processed_log
-            .unwrap()
+        // Parse remaining count from logs ("Processed X payments for list Y, Z remaining")
+        let remaining_log = logs.iter().find(|log| log.contains("remaining")).unwrap();
+        let remaining: u64 = remaining_log
             .split_whitespace()
+            .rev()
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
+        // Print progress
         println!(
-            "  Batch {}: processed {} payments, {} mt_burn events, {} ft_burn events",
-            batch_num, processed_count, mt_burns, ft_burns
+            "  Batch {}: {} mt_burn, {} ft_burn events, {} remaining",
+            batch_num, mt_burns, ft_burns, remaining
         );
+
+        // Check if all payments are complete
+        if remaining == 0 {
+            println!("✓ All payments processed after {} batches", batch_num);
+            break;
+        }
 
         // Wait for cross-contract calls to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
