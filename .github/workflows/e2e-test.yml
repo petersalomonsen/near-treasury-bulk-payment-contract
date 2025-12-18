@@ -177,8 +177,10 @@ jobs:
       
       - name: Pull Docker image
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} near-treasury-sandbox
+          # Use short SHA (7 chars) which matches the docker/metadata-action output
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA} near-treasury-sandbox
       
       - name: Start Docker container
         run: |
