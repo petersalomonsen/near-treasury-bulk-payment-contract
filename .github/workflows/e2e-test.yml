@@ -1,8 +1,9 @@
 # E2E Test Workflow: DAO Bulk Payment Flow
 #
 # This workflow runs the end-to-end test that demonstrates the full DAO bulk payment flow:
-# 1. Builds and starts the Docker container with all services
-# 2. Runs the JavaScript test script that:
+# 1. Builds Docker images on native runners (amd64 + arm64 in parallel)
+# 2. Merges into a multi-arch manifest and pushes to ghcr.io
+# 3. Runs the JavaScript test script that:
 #    - Creates a Sputnik DAO
 #    - Creates and approves buy_storage proposal
 #    - Submits payment list via API
@@ -11,6 +12,8 @@
 #
 # The test can also be run against a deployed Fly.io instance by setting
 # SANDBOX_RPC_URL and API_URL environment variables.
+#
+# Docker images are cached in GitHub Container Registry (ghcr.io) to speed up builds.
 
 name: E2E Test - DAO Bulk Payment
 
@@ -38,11 +41,119 @@ on:
         required: false
         type: string
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/near-treasury-sandbox
+
 jobs:
+  # Build Docker images on native runners for each platform
+  build:
+    name: Build (${{ matrix.platform }})
+    if: ${{ !inputs.fly_app_url }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            suffix: arm64
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-${{ matrix.suffix }}
+            type=ref,event=pr,suffix=-${{ matrix.suffix }}
+            type=sha,prefix=,suffix=-${{ matrix.suffix }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./sandbox/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.suffix }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.suffix }},mode=max
+
+  # Merge platform-specific images into a multi-arch manifest
+  merge-manifest:
+    name: Merge Multi-Arch Manifest
+    if: ${{ !inputs.fly_app_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Create and push multi-arch manifest
+        run: |
+          # Get the tags from metadata
+          TAGS="${{ steps.meta.outputs.tags }}"
+          
+          # For each tag, create a manifest from the platform-specific images
+          for TAG in $TAGS; do
+            echo "Creating manifest for $TAG"
+            docker buildx imagetools create -t "$TAG" \
+              "${TAG}-amd64" \
+              "${TAG}-arm64"
+          done
+
+  # Run E2E tests
   e2e-test:
     name: Run E2E Tests
+    needs: merge-manifest
+    if: ${{ !inputs.fly_app_url && always() && (needs.merge-manifest.result == 'success' || needs.merge-manifest.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
     
     steps:
       - name: Checkout repository
@@ -57,13 +168,21 @@ jobs:
         working-directory: ./e2e-tests
         run: npm install
       
-      - name: Build Docker image
-        if: ${{ !inputs.fly_app_url }}
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Pull Docker image
         run: |
-          docker build -t near-treasury-sandbox -f sandbox/Dockerfile .
+          # Use short SHA (7 chars) which matches the docker/metadata-action output
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA} near-treasury-sandbox
       
       - name: Start Docker container
-        if: ${{ !inputs.fly_app_url }}
         run: |
           docker run -d \
             --name sandbox \
@@ -89,30 +208,48 @@ jobs:
           # Show container logs
           docker logs sandbox
       
-      - name: Run E2E tests against Docker
-        if: ${{ !inputs.fly_app_url }}
+      - name: Run E2E tests
         working-directory: ./e2e-tests
         env:
           SANDBOX_RPC_URL: http://localhost:3030
           API_URL: http://localhost:8080
-          NUM_RECIPIENTS: '100'  # Reduced for CI to speed up tests
+          NUM_RECIPIENTS: '100'
         run: npm run test:all:docker
       
+      - name: Show Docker logs on failure
+        if: failure()
+        run: docker logs sandbox
+      
+      - name: Stop Docker container
+        if: always()
+        run: |
+          docker stop sandbox || true
+          docker rm sandbox || true
+
+  # Run E2E tests against Fly.io (when fly_app_url is provided)
+  e2e-test-fly:
+    name: Run E2E Tests (Fly.io)
+    if: ${{ inputs.fly_app_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install test dependencies
+        working-directory: ./e2e-tests
+        run: npm install
+      
       - name: Run E2E tests against Fly.io
-        if: ${{ inputs.fly_app_url }}
         working-directory: ./e2e-tests
         env:
           SANDBOX_RPC_URL: ${{ inputs.fly_app_url }}:3030
           API_URL: ${{ inputs.fly_app_url }}:8080
           NUM_RECIPIENTS: '100'
         run: npm run test:all
-      
-      - name: Show Docker logs on failure
-        if: failure() && !inputs.fly_app_url
-        run: docker logs sandbox
-      
-      - name: Stop Docker container
-        if: always() && !inputs.fly_app_url
-        run: |
-          docker stop sandbox || true
-          docker rm sandbox || true

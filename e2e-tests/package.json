@@ -10,6 +10,8 @@
     "test:fly": "node dao-bulk-payment-flow.js",
     "test:fungible-token": "node fungible-token-non-registered-flow.js",
     "test:fungible-token:docker": "SANDBOX_RPC_URL=http://localhost:3030 API_URL=http://localhost:8080 node fungible-token-non-registered-flow.js",
+    "test:fungible-token:large": "node fungible-token-large-batch.js",
+    "test:fungible-token:large:docker": "SANDBOX_RPC_URL=http://localhost:3030 API_URL=http://localhost:8080 node fungible-token-large-batch.js",
     "test:near-intents": "node near-intents-non-registered-flow.js",
     "test:near-intents:docker": "SANDBOX_RPC_URL=http://localhost:3030 API_URL=http://localhost:8080 node near-intents-non-registered-flow.js",
     "test:all": "npm run test && npm run test:fungible-token && npm run test:near-intents",
