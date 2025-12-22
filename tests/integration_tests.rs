@@ -630,9 +630,18 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         - (contract_state_before.storage_usage as u128 * storage_cost_per_byte);
 
     println!("Contract state BEFORE buy_storage:");
-    println!("  Total balance: {} yoctoNEAR", contract_state_before.amount.as_yoctonear());
-    println!("  Storage usage: {} bytes", contract_state_before.storage_usage);
-    println!("  Available balance: {} yoctoNEAR", available_balance_before);
+    println!(
+        "  Total balance: {} yoctoNEAR",
+        contract_state_before.amount.as_yoctonear()
+    );
+    println!(
+        "  Storage usage: {} bytes",
+        contract_state_before.storage_usage
+    );
+    println!(
+        "  Available balance: {} yoctoNEAR",
+        available_balance_before
+    );
 
     // Buy storage for 100 recipients - query contract for exact cost
     let num_records = 100;
@@ -910,8 +919,14 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         - (contract_state_after.storage_usage as u128 * storage_cost_per_byte);
 
     println!("\nContract state AFTER all payouts:");
-    println!("  Total balance: {} yoctoNEAR", contract_state_after.amount.as_yoctonear());
-    println!("  Storage usage: {} bytes", contract_state_after.storage_usage);
+    println!(
+        "  Total balance: {} yoctoNEAR",
+        contract_state_after.amount.as_yoctonear()
+    );
+    println!(
+        "  Storage usage: {} bytes",
+        contract_state_after.storage_usage
+    );
     println!("  Available balance: {} yoctoNEAR", available_balance_after);
     println!(
         "\nAvailable balance change: {} yoctoNEAR",
@@ -1497,7 +1512,10 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     let available_balance_before = contract_state_before.amount.as_yoctonear()
         - (contract_state_before.storage_usage as u128 * storage_cost_per_byte);
 
-    println!("  Available balance before buy_storage: {} yoctoNEAR", available_balance_before);
+    println!(
+        "  Available balance before buy_storage: {} yoctoNEAR",
+        available_balance_before
+    );
 
     // ========================================================================
     // STEP 5: Setup submitter account and purchase storage
@@ -1970,8 +1988,14 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     let available_balance_after = contract_state_after.amount.as_yoctonear()
         - (contract_state_after.storage_usage as u128 * storage_cost_per_byte);
 
-    println!("  Total balance: {} yoctoNEAR", contract_state_after.amount.as_yoctonear());
-    println!("  Storage usage: {} bytes", contract_state_after.storage_usage);
+    println!(
+        "  Total balance: {} yoctoNEAR",
+        contract_state_after.amount.as_yoctonear()
+    );
+    println!(
+        "  Storage usage: {} bytes",
+        contract_state_after.storage_usage
+    );
     println!("  Available balance: {} yoctoNEAR", available_balance_after);
     println!(
         "  Available balance change: {} yoctoNEAR",
