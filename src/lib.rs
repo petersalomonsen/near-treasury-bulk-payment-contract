@@ -127,11 +127,14 @@ impl BulkPaymentContract {
         require!(num_records > 0, "Number of records must be greater than 0");
 
         // Calculate storage per record (maximum possible size):
-        // - AccountId: 64 bytes (implicit account - hex-encoded ed25519 pubkey) + 4 bytes length prefix
+        // - AccountId: 64 bytes (implicit account - hex-encoded ed25519 pubkey)
+        //              + 4 bytes length prefix = 68 bytes
         // - amount: 16 bytes (u128)
-        // - status (Paid): 1 byte enum tag + 8 bytes block_height
+        // - status (Paid): 1 byte enum tag + 8 bytes block_height = 9 bytes
         // - overhead: ~8 bytes for Vec storage per element
-        // Total: 101 bytes, rounded up to 110 for safety margin
+        // Subtotal: 68 + 16 + 9 + 8 = 101 bytes
+        // Add 9 bytes safety margin for potential borsh serialization overhead
+        // Total: 110 bytes per record
         const BYTES_PER_RECORD: u64 = 110;
 
         let storage_bytes = BYTES_PER_RECORD
