@@ -616,9 +616,19 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Buy storage for 100 recipients
+    // Buy storage for 100 recipients - query contract for exact cost
     let num_records = 100;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 10); // 10x for 100 records
+    let storage_cost: NearToken = near_api::Contract(contract_id.clone())
+        .call_function(
+            "calculate_storage_cost",
+            json!({ "num_records": num_records }),
+        )
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
 
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": num_records }))
@@ -630,6 +640,17 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .await
         .unwrap()
         .assert_success();
+
+    // Get contract balance AFTER buy_storage (this is our baseline for payout tracking)
+    let contract_balance_after_buy = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
+
+    println!("Contract balance after buy_storage: {} yoctoNEAR", contract_balance_after_buy.as_yoctonear());
 
     // Create 100 recipient accounts
     let mut recipients = Vec::new();
@@ -865,6 +886,29 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             recorded_amount
         );
     }
+
+    // Verify contract NEAR balance did not decrease after payouts
+    // (Storage revenue should cover gas costs)
+    let contract_balance_after_payouts = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data
+        .amount;
+
+    println!("Contract balance after payouts: {} yoctoNEAR", contract_balance_after_payouts.as_yoctonear());
+    println!(
+        "Balance change: {} yoctoNEAR",
+        contract_balance_after_payouts.as_yoctonear() as i128 - contract_balance_after_buy.as_yoctonear() as i128
+    );
+
+    assert!(
+        contract_balance_after_payouts.as_yoctonear() >= contract_balance_after_buy.as_yoctonear(),
+        "Contract NEAR balance should not decrease after FT payouts. After buy_storage: {}, After payouts: {}",
+        contract_balance_after_buy.as_yoctonear(),
+        contract_balance_after_payouts.as_yoctonear()
+    );
 
     Ok(())
 }
@@ -1458,7 +1502,16 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
         .await?
         .assert_success();
 
+    // Get contract balance AFTER buy_storage (this is our baseline for payout tracking)
+    let contract_balance_after_buy = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await?
+        .data
+        .amount;
+
     println!("✓ Purchased storage for 25 payment records");
+    println!("  Contract balance after buy_storage: {} yoctoNEAR", contract_balance_after_buy.as_yoctonear());
 
     // ========================================================================
     // STEP 6: Create bulk payment list for 25 BTC addresses
@@ -1878,6 +1931,33 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     }
 
     println!("✓ All 25 payments verified with correct BTC addresses and amounts");
+
+    // ========================================================================
+    // STEP 12: Verify contract NEAR balance did not decrease after payouts
+    // ========================================================================
+    println!("\n--- VERIFYING: Contract balance after payouts ---");
+
+    let contract_balance_after_payouts = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await?
+        .data
+        .amount;
+
+    println!("  Contract balance after payouts: {} yoctoNEAR", contract_balance_after_payouts.as_yoctonear());
+    println!(
+        "  Balance change: {} yoctoNEAR",
+        contract_balance_after_payouts.as_yoctonear() as i128 - contract_balance_after_buy.as_yoctonear() as i128
+    );
+
+    assert!(
+        contract_balance_after_payouts.as_yoctonear() >= contract_balance_after_buy.as_yoctonear(),
+        "Contract NEAR balance should not decrease after Intents payouts. After buy_storage: {}, After payouts: {}",
+        contract_balance_after_buy.as_yoctonear(),
+        contract_balance_after_payouts.as_yoctonear()
+    );
+
+    println!("✓ Contract NEAR balance maintained (charged enough for gas costs)");
 
     Ok(())
 }
