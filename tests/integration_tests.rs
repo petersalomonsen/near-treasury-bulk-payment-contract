@@ -616,9 +616,46 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Buy storage for 100 recipients
+    // Get contract's available balance BEFORE buy_storage
+    // Available = total balance - storage locked
+    // Storage cost per byte = 10^19 yoctoNEAR
+    let contract_state_before = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
+    let storage_cost_per_byte: u128 = 10_u128.pow(19);
+    let available_balance_before = contract_state_before.amount.as_yoctonear()
+        - (contract_state_before.storage_usage as u128 * storage_cost_per_byte);
+
+    println!("Contract state BEFORE buy_storage:");
+    println!(
+        "  Total balance: {} yoctoNEAR",
+        contract_state_before.amount.as_yoctonear()
+    );
+    println!(
+        "  Storage usage: {} bytes",
+        contract_state_before.storage_usage
+    );
+    println!(
+        "  Available balance: {} yoctoNEAR",
+        available_balance_before
+    );
+
+    // Buy storage for 100 recipients - query contract for exact cost
     let num_records = 100;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 10); // 10x for 100 records
+    let storage_cost: NearToken = near_api::Contract(contract_id.clone())
+        .call_function(
+            "calculate_storage_cost",
+            json!({ "num_records": num_records }),
+        )
+        .unwrap()
+        .read_only()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
 
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": num_records }))
@@ -761,7 +798,10 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
     );
 
     // Process payments until all are complete
+    // payout_batch is called by the CONTRACT ACCOUNT (like the API worker does)
+    // This is important because the gas cost comes from the contract's balance
     // payout_batch logs "Processed X payments for list Y, Z remaining"
+    let contract_signer = get_genesis_signer(); // Contract uses same genesis key
     let mut batch = 0;
     loop {
         batch += 1;
@@ -770,7 +810,7 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             .unwrap()
             .transaction()
             .gas(near_sdk::Gas::from_tgas(300))
-            .with_signer(user_id.clone(), user_signer.clone())
+            .with_signer(contract_id.clone(), contract_signer.clone())
             .send_to(&network_config)
             .await
             .unwrap();
@@ -865,6 +905,44 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
             recorded_amount
         );
     }
+
+    // Verify contract's AVAILABLE balance did not decrease after payouts
+    // Available = total balance - storage locked
+    // The storage pricing should cover the gas costs spent by the contract when calling payout_batch
+    let contract_state_after = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await
+        .unwrap()
+        .data;
+    let available_balance_after = contract_state_after.amount.as_yoctonear()
+        - (contract_state_after.storage_usage as u128 * storage_cost_per_byte);
+
+    println!("\nContract state AFTER all payouts:");
+    println!(
+        "  Total balance: {} yoctoNEAR",
+        contract_state_after.amount.as_yoctonear()
+    );
+    println!(
+        "  Storage usage: {} bytes",
+        contract_state_after.storage_usage
+    );
+    println!("  Available balance: {} yoctoNEAR", available_balance_after);
+    println!(
+        "\nAvailable balance change: {} yoctoNEAR",
+        available_balance_after as i128 - available_balance_before as i128
+    );
+
+    assert!(
+        available_balance_after >= available_balance_before,
+        "Contract's AVAILABLE balance should not decrease after FT payouts.\n\
+         Before buy_storage: {} yoctoNEAR\n\
+         After all payouts:  {} yoctoNEAR\n\
+         Change: {} yoctoNEAR",
+        available_balance_before,
+        available_balance_after,
+        available_balance_after as i128 - available_balance_before as i128
+    );
 
     Ok(())
 }
@@ -1422,6 +1500,23 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
 
     println!("✓ Bulk-payment contract deployed at {}", contract_id);
 
+    // Get contract's available balance BEFORE buy_storage
+    // Available = total balance - storage locked
+    // Storage cost per byte = 10^19 yoctoNEAR
+    let storage_cost_per_byte: u128 = 10_u128.pow(19);
+    let contract_state_before = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await?
+        .data;
+    let available_balance_before = contract_state_before.amount.as_yoctonear()
+        - (contract_state_before.storage_usage as u128 * storage_cost_per_byte);
+
+    println!(
+        "  Available balance before buy_storage: {} yoctoNEAR",
+        available_balance_before
+    );
+
     // ========================================================================
     // STEP 5: Setup submitter account and purchase storage
     // ========================================================================
@@ -1737,14 +1832,15 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     let mut batch_num = 0;
 
     // Loop until all payments are processed
-    // payout_batch returns the number of remaining pending payments
+    // payout_batch is called by the CONTRACT ACCOUNT (like the API worker does)
+    // This is important because the gas cost comes from the contract's balance
     loop {
         batch_num += 1;
         let result = near_api::Contract(contract_id.clone())
             .call_function("payout_batch", json!({ "list_id": list_id }))?
             .transaction()
             .gas(near_sdk::Gas::from_tgas(300))
-            .with_signer(submitter_id.clone(), submitter_signer.clone())
+            .with_signer(contract_id.clone(), contract_signer.clone())
             .send_to(&network_config)
             .await?;
 
@@ -1878,6 +1974,46 @@ async fn test_bulk_btc_intents_payment() -> Result<(), Box<dyn std::error::Error
     }
 
     println!("✓ All 25 payments verified with correct BTC addresses and amounts");
+
+    // ========================================================================
+    // STEP 12: Verify contract's AVAILABLE balance did not decrease after payouts
+    // ========================================================================
+    println!("\n--- VERIFYING: Contract available balance after payouts ---");
+
+    let contract_state_after = near_api::Account(contract_id.clone())
+        .view()
+        .fetch_from(&network_config)
+        .await?
+        .data;
+    let available_balance_after = contract_state_after.amount.as_yoctonear()
+        - (contract_state_after.storage_usage as u128 * storage_cost_per_byte);
+
+    println!(
+        "  Total balance: {} yoctoNEAR",
+        contract_state_after.amount.as_yoctonear()
+    );
+    println!(
+        "  Storage usage: {} bytes",
+        contract_state_after.storage_usage
+    );
+    println!("  Available balance: {} yoctoNEAR", available_balance_after);
+    println!(
+        "  Available balance change: {} yoctoNEAR",
+        available_balance_after as i128 - available_balance_before as i128
+    );
+
+    assert!(
+        available_balance_after >= available_balance_before,
+        "Contract's AVAILABLE balance should not decrease after Intents payouts.\n\
+         Before buy_storage: {} yoctoNEAR\n\
+         After all payouts:  {} yoctoNEAR\n\
+         Change: {} yoctoNEAR",
+        available_balance_before,
+        available_balance_after,
+        available_balance_after as i128 - available_balance_before as i128
+    );
+
+    println!("✓ Contract's available balance maintained (pricing covers gas costs)");
 
     Ok(())
 }
