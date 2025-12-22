@@ -179,8 +179,11 @@ async fn test_storage_purchase() -> Result<(), Box<dyn std::error::Error>> {
     let user_signer = create_account(&user_id, NearToken::from_near(50), &network_config).await;
 
     // Calculate expected cost for 10 records
+    // Storage: 110 bytes * 10 * 10^19 = 11_000_000_000_000_000_000_000
+    // Gas: 300 TGas * 10^8 * 10 = 300_000_000_000_000_000_000_000
+    // Total: 311_000_000_000_000_000_000_000
     let num_records = 10;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+    let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
 
     // Get initial contract balance
     let initial_balance = near_api::Account(contract_id.clone())
@@ -203,7 +206,7 @@ async fn test_storage_purchase() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .assert_success();
 
-    // Verify contract balance increased (revenue)
+    // Verify contract balance increased
     let final_balance = near_api::Account(contract_id.clone())
         .view()
         .fetch_from(&network_config)
@@ -214,7 +217,7 @@ async fn test_storage_purchase() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(
         final_balance > initial_balance,
-        "Contract balance should increase (revenue generation)"
+        "Contract balance should increase to cover storage and gas costs"
     );
 
     // Verify storage credits
@@ -258,9 +261,9 @@ async fn test_submit_and_approve_list() -> Result<(), Box<dyn std::error::Error>
     .parse()
     .unwrap();
 
-    // Buy storage first
+    // Buy storage first (cost for 5 records: storage 5_500_000_000_000_000_000_000 + gas 150_000_000_000_000_000_000_000)
     let num_records = 5;
-    let storage_cost = NearToken::from_yoctonear(11_880_000_000_000_000_000_000);
+    let storage_cost = NearToken::from_yoctonear(155_500_000_000_000_000_000_000);
 
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": num_records }))
@@ -359,8 +362,9 @@ async fn test_batch_processing() -> Result<(), Box<dyn std::error::Error>> {
     let user_signer = create_account(&user_id, NearToken::from_near(500), &network_config).await;
 
     // Buy storage for 250 payments (need 250 credits, buy 260 to be safe)
+    // Cost for 260 records: storage 286_000_000_000_000_000_000_000 + gas 7_800_000_000_000_000_000_000_000
     let num_records = 260;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 26);
+    let storage_cost = NearToken::from_yoctonear(8_086_000_000_000_000_000_000_000);
 
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": num_records }))
@@ -616,9 +620,9 @@ async fn test_fungible_token_payment() -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .assert_success();
 
-    // Buy storage for 100 recipients
+    // Buy storage for 100 recipients (cost: storage 110_000_000_000_000_000_000_000 + gas 3_000_000_000_000_000_000_000_000)
     let num_records = 100;
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 10); // 10x for 100 records
+    let storage_cost = NearToken::from_yoctonear(3_110_000_000_000_000_000_000_000);
 
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": num_records }))
@@ -895,8 +899,8 @@ async fn test_reject_pending_list() -> Result<(), Box<dyn std::error::Error>> {
     .parse()
     .unwrap();
 
-    // Buy storage
-    let storage_cost = NearToken::from_yoctonear(11_880_000_000_000_000_000_000);
+    // Buy storage (cost for 5 records: storage 5_500_000_000_000_000_000_000 + gas 150_000_000_000_000_000_000_000)
+    let storage_cost = NearToken::from_yoctonear(155_500_000_000_000_000_000_000);
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": 5 }))
         .unwrap()
@@ -986,8 +990,8 @@ async fn test_revenue_generation() -> Result<(), Box<dyn std::error::Error>> {
         .data
         .amount;
 
-    // Multiple users buy storage
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+    // Multiple users buy storage (cost for 10 records: storage + gas)
+    let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
 
     for (user, signer) in [
         (user1.clone(), user1_signer),
@@ -1015,23 +1019,20 @@ async fn test_revenue_generation() -> Result<(), Box<dyn std::error::Error>> {
         .data
         .amount;
 
-    // Calculate expected revenue
-    // 10% markup on 3 purchases of 10 records each
-    let markup = NearToken::from_yoctonear(2_160_000_000_000_000_000_000);
-    let expected_revenue = NearToken::from_yoctonear(markup.as_yoctonear() * 3);
+    // Verify contract balance increased to cover storage and gas costs
+    // No additional markup - the deposit covers actual costs (storage + gas)
+    let expected_increase = storage_cost.as_yoctonear() * 3;
 
-    let actual_revenue = NearToken::from_yoctonear(
-        final_balance
-            .as_yoctonear()
-            .saturating_sub(initial_balance.as_yoctonear()),
-    );
+    let actual_increase = final_balance
+        .as_yoctonear()
+        .saturating_sub(initial_balance.as_yoctonear());
 
-    // Verify revenue is at least the expected markup (may be slightly more due to gas refunds)
+    // Contract balance should increase to cover storage and gas costs
     assert!(
-        actual_revenue.as_yoctonear() >= expected_revenue.as_yoctonear(),
-        "Contract should generate revenue from storage markup. Expected at least: {}, Got: {}",
-        expected_revenue,
-        actual_revenue
+        actual_increase >= expected_increase,
+        "Contract should retain deposits to cover costs. Expected at least: {}, Got: {}",
+        expected_increase,
+        actual_increase
     );
 
     Ok(())
@@ -1088,8 +1089,8 @@ async fn test_unauthorized_operations() -> Result<(), Box<dyn std::error::Error>
     .parse()
     .unwrap();
 
-    // Setup: user buys storage and submits list
-    let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+    // Setup: user buys storage and submits list (cost for 10 records)
+    let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
     near_api::Contract(contract_id.clone())
         .call_function("buy_storage", json!({ "num_records": 10 }))
         .unwrap()

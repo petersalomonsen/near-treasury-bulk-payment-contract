@@ -111,20 +111,28 @@ impl BulkPaymentContract {
     /// Calculate the required deposit for purchasing storage for a given number of records.
     /// This is a view function that does not modify state.
     ///
+    /// The deposit covers:
+    /// 1. Storage cost: Maximum possible storage size per record (using 64-char implicit account)
+    /// 2. Gas cost: 300 TGas per payment to safely cover the most costly payment type (NEAR Intents)
+    ///
+    /// This ensures the contract balance doesn't decrease after paying out, without accumulating
+    /// unnecessary revenue on the bulk payment account.
+    ///
     /// # Arguments
     /// * `num_records` - Number of payment records to calculate storage cost for
     ///
     /// # Returns
-    /// The total cost in NearToken (including 10% markup)
+    /// The total cost in NearToken (storage + gas costs)
     pub fn calculate_storage_cost(&self, num_records: u64) -> NearToken {
         require!(num_records > 0, "Number of records must be greater than 0");
 
-        // Calculate storage per record:
-        // - AccountId: 100 bytes max (UTF-8 string)
+        // Calculate storage per record (maximum possible size):
+        // - AccountId: 64 bytes (implicit account - hex-encoded ed25519 pubkey) + 4 bytes length prefix
         // - amount: 16 bytes (u128)
-        // - status: ~50 bytes (enum with error string)
-        // - overhead: ~50 bytes for Vec storage
-        const BYTES_PER_RECORD: u64 = 216;
+        // - status (Paid): 1 byte enum tag + 8 bytes block_height
+        // - overhead: ~8 bytes for Vec storage per element
+        // Total: 101 bytes, rounded up to 110 for safety margin
+        const BYTES_PER_RECORD: u64 = 110;
 
         let storage_bytes = BYTES_PER_RECORD
             .checked_mul(num_records)
@@ -135,17 +143,33 @@ impl BulkPaymentContract {
             .checked_mul(10_u128.pow(19))
             .expect("Storage cost calculation overflow");
 
-        // Add 10% revenue margin
+        // Gas cost per payment: 300 TGas to safely cover NEAR Intents and other cross-contract calls
+        // Gas price on NEAR: 100 million yoctoNEAR per gas unit (10^8)
+        // 300 TGas = 300 * 10^12 gas
+        // Cost = 300 * 10^12 * 10^8 = 3 * 10^22 yoctoNEAR = 0.03 NEAR per payment
+        const GAS_PER_PAYMENT: u128 = 300_000_000_000_000; // 300 TGas
+        const GAS_PRICE: u128 = 100_000_000; // 100 million yoctoNEAR per gas
+        let gas_cost_per_payment = GAS_PER_PAYMENT
+            .checked_mul(GAS_PRICE)
+            .expect("Gas cost calculation overflow");
+
+        let total_gas_cost = gas_cost_per_payment
+            .checked_mul(num_records as u128)
+            .expect("Total gas cost calculation overflow");
+
+        // Total cost = storage cost + gas cost (no markup)
         let total_cost_yocto = storage_cost_yocto
-            .checked_mul(11)
-            .and_then(|x| x.checked_div(10))
+            .checked_add(total_gas_cost)
             .expect("Total cost calculation overflow");
 
         NearToken::from_yoctonear(total_cost_yocto)
     }
 
-    /// Purchase storage credits for payment records with 10% markup.
-    /// Storage includes: AccountId (max 100 chars) + u128 amount + status fields.
+    /// Purchase storage credits for payment records.
+    /// Cost covers: storage (max 64-char implicit account) + gas (300 TGas per payment).
+    ///
+    /// The deposit is calculated to ensure the contract balance doesn't decrease after
+    /// paying out, while avoiding unnecessary accumulation of revenue.
     ///
     /// # Arguments
     /// * `num_records` - Number of payment records to purchase storage for
@@ -800,11 +824,12 @@ mod tests {
     fn test_storage_cost_calculation() {
         let mut context = get_context(accounts(0));
 
-        // Calculate expected cost for 10 records
-        // 216 bytes per record * 10 = 2160 bytes
-        // 2160 * 10^19 yoctoNEAR/byte = 21600000000000000000000 yoctoNEAR
-        // With 10% markup: 21600000000000000000000 * 1.1 = 23760000000000000000000 yoctoNEAR
-        let expected_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // Calculate expected cost for 10 records:
+        // Storage: 110 bytes per record * 10 = 1100 bytes
+        // 1100 * 10^19 yoctoNEAR/byte = 11_000_000_000_000_000_000_000 yoctoNEAR
+        // Gas: 300 TGas * 10^8 gas price * 10 = 300_000_000_000_000_000_000_000 yoctoNEAR
+        // Total: 11_000_000_000_000_000_000_000 + 300_000_000_000_000_000_000_000 = 311_000_000_000_000_000_000_000
+        let expected_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
 
         context.attached_deposit(expected_cost);
         testing_env!(context.build());
@@ -834,8 +859,8 @@ mod tests {
     fn test_submit_list_deducts_credits() {
         let mut context = get_context(accounts(0));
 
-        // First buy storage
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // First buy storage (cost for 10 records: storage 11_000_000_000_000_000_000_000 + gas 300_000_000_000_000_000_000_000)
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -893,8 +918,8 @@ mod tests {
     fn test_approve_list() {
         let mut context = get_context(accounts(0));
 
-        // Setup: buy storage and submit list
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // Setup: buy storage and submit list (cost for 10 records)
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -935,8 +960,8 @@ mod tests {
     fn test_approve_list_wrong_deposit() {
         let mut context = get_context(accounts(0));
 
-        // Setup
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // Setup (cost for 10 records)
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -967,8 +992,8 @@ mod tests {
     fn test_approve_list_unauthorized() {
         let mut context = get_context(accounts(0));
 
-        // Setup: user 0 submits
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // Setup: user 0 submits (cost for 10 records)
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -999,8 +1024,8 @@ mod tests {
     fn test_reject_list() {
         let mut context = get_context(accounts(0));
 
-        // Setup
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // Setup (cost for 10 records)
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -1030,8 +1055,8 @@ mod tests {
     fn test_reject_approved_list_fails() {
         let mut context = get_context(accounts(0));
 
-        // Setup
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // Setup (cost for 10 records)
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -1064,8 +1089,8 @@ mod tests {
     fn test_multiple_lists() {
         let mut context = get_context(accounts(0));
 
-        // Buy storage
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000 * 2);
+        // Buy storage (cost for 20 records)
+        let storage_cost = NearToken::from_yoctonear(622_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -1114,11 +1139,12 @@ mod tests {
     fn test_calculate_storage_cost() {
         let contract = BulkPaymentContract::default();
 
-        // Calculate expected cost for 10 records
-        // 216 bytes per record * 10 = 2160 bytes
-        // 2160 * 10^19 yoctoNEAR/byte = 21600000000000000000000 yoctoNEAR
-        // With 10% markup: 21600000000000000000000 * 1.1 = 23760000000000000000000 yoctoNEAR
-        let expected_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // Calculate expected cost for 10 records:
+        // Storage: 110 bytes per record * 10 = 1100 bytes
+        // 1100 * 10^19 yoctoNEAR/byte = 11_000_000_000_000_000_000_000 yoctoNEAR
+        // Gas: 300 TGas * 10^8 gas price * 10 = 300_000_000_000_000_000_000_000 yoctoNEAR
+        // Total: 311_000_000_000_000_000_000_000 yoctoNEAR
+        let expected_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
 
         let calculated_cost = contract.calculate_storage_cost(10);
 
@@ -1137,7 +1163,7 @@ mod tests {
         let mut context = get_context(accounts(0)); // User 0 is the payer
 
         // Calculate expected cost for 10 records
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -1161,7 +1187,7 @@ mod tests {
     fn test_buy_storage_without_beneficiary_credits_caller() {
         let mut context = get_context(accounts(0));
 
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
@@ -1181,8 +1207,8 @@ mod tests {
     fn test_submit_list_uses_beneficiary_credits() {
         let mut context = get_context(accounts(0));
 
-        // User 0 buys storage for User 1
-        let storage_cost = NearToken::from_yoctonear(23_760_000_000_000_000_000_000);
+        // User 0 buys storage for User 1 (cost for 10 records)
+        let storage_cost = NearToken::from_yoctonear(311_000_000_000_000_000_000_000);
         context.attached_deposit(storage_cost);
         testing_env!(context.build());
 
